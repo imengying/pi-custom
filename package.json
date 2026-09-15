@@ -1,0 +1,23 @@
+{
+  "name": "pi-compact-workflow",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": ["./extensions/compact-workflow"],
+    "themes": ["./themes/codex-dark.json"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@earendil-works/pi-tui": "^0.85.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}
