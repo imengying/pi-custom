@@ -56,27 +56,28 @@ describe("permission decisions", () => {
     let title = "";
     const gate = new PermissionGate(async (_ctx, heading, text) => { title = heading; body = text; return false; });
     await gate.preflight("id", "write", { path: "../outside-file", content: "preview" }, context());
-    expect(title).toBe("需要用户授权 · write");
+    expect(title).toBe("需要用户授权");
     expect(body).toContain("preview");
     // The panel is deliberately label-free: no 完整操作/原因/工作目录/实际目标 lines.
     for (const label of ["完整操作", "原因:", "工作目录:", "实际目标:"]) expect(body).not.toContain(label);
   });
-  test("shell approval names the shell that will actually run the command", async () => {
-    // pi names this tool `bash` on every platform, so the title alone would hide
-    // whether zsh or bash runs the command. The resolved shell is shown for clarity.
+  test("shell approval keeps the heading free of the tool name", async () => {
+    // `bash` is pi's tool name on every platform; naming it in the heading said nothing
+    // about the real shell, so the heading is now just the decision being asked for and
+    // the tool is identified by the payload below it. The policy still follows the shell.
     const titles: string[] = [];
     const gate = new PermissionGate(async (_ctx, heading) => { titles.push(heading); return false; });
     try {
       setShellDialect("zsh", "/usr/bin/zsh");
       await gate.preflight("id", "bash", dangerous, context());
-      expect(titles.at(-1)).toBe("需要用户授权 · bash（/usr/bin/zsh）");
-      // Without shellPath, pi uses its own default: say so rather than implying zsh.
+      expect(titles.at(-1)).toBe("需要用户授权");
       setShellDialect("bash", undefined);
       await gate.preflight("id", "bash", dangerous, context());
-      expect(titles.at(-1)).toBe("需要用户授权 · bash（bash）");
-      // Non-shell tools carry no shell suffix at all.
+      expect(titles.at(-1)).toBe("需要用户授权");
       await gate.preflight("id", "write", { path: "../outside-file", content: "x" }, context());
-      expect(titles.at(-1)).toBe("需要用户授权 · write");
+      expect(titles.at(-1)).toBe("需要用户授权");
+      // No tool name and no shell path may leak back into the heading.
+      expect(titles.every((title) => title === "需要用户授权")).toBe(true);
     } finally {
       setShellDialect("bash", undefined);
     }

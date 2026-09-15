@@ -1,7 +1,7 @@
 import type { ExtensionContext, MarkdownTransformContext, Theme } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, isKeyRepeat, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
-export const THINKING_PREVIEW_LINES = 2;
+const THINKING_PREVIEW_LINES = 2;
 export const COMMAND_PREVIEW_LINES = 5;
 export const DIFF_PREVIEW_LINES = 14;
 
@@ -128,9 +128,9 @@ export class ReviewDialog {
     this.maxOffset = Math.max(0, content.length - this.pageSize);
     this.offset = Math.min(this.offset, this.maxOffset);
     // Body and frame stay in the theme's neutral gray range on the terminal's own
-    // black background: the gold `warning` role is reserved for real warnings (the
-    // footer's context gauge) and `accent` for links, so the active row is marked
-    // by brightness, its highlight bar and the `›` cursor instead.
+    // black background; the title and the two choices carry the accent colour so the
+    // heading and the decision stand out from the command text. The gold `warning`
+    // role stays reserved for real warnings (the footer's context gauge).
     const rule = () => this.theme.fg("borderMuted", "─".repeat(Math.max(0, width)));
     const row = (text: string, selected = false) => {
       const textWidth = Math.max(0, width - 2);
@@ -143,13 +143,13 @@ export class ReviewDialog {
       : ["1. 允许", "2. 拒绝"];
     const choice = (allow: boolean) => {
       const selected = this.allowSelected === allow;
-      return row(this.theme.fg(selected ? "muted" : "dim",
-        (selected ? "› " : "  ") + labels[allow ? 0 : 1]), selected);
+      const label = (selected ? "› " : "  ") + labels[allow ? 0 : 1];
+      return row(this.theme.fg("accent", selected ? this.theme.bold(label) : label), selected);
     };
     const lines = [
       ...(dock ? [rule()] : []),
-      ...(height >= 3 ? [row(this.theme.fg("muted", this.theme.bold(this.title)) +
-        (this.title.includes("等待确认") ? "" : this.theme.fg("dim", " · 等待确认")))] : []),
+      ...(height >= 3 ? [row(this.theme.fg("accent", this.theme.bold(this.title)) +
+        (this.title.includes("等待确认") ? "" : this.theme.fg("accent", " · 等待确认")))] : []),
       ...content.slice(this.offset, this.offset + this.pageSize).map((text) => row(this.theme.fg("muted", text))),
       ...(divider ? [rule()] : []),
       choice(true),

@@ -48,7 +48,7 @@ export function dialectForShellPath(shellPath: string | undefined): ShellDialect
   return shellPath && /(?:^|[\\/])zsh(?:\.exe)?$/i.test(shellPath) ? "zsh" : "bash";
 }
 
-export function shellQuote(value: string): string {
+function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'";
 }
 
@@ -156,8 +156,9 @@ export function assessPath(operation: "read" | "write", input: unknown, cwd: str
  * escaped, in which case the quotes are stripped and `quoted` is false. `''=ls` stays
  * unquoted because an empty quote does not start the word.
  */
-export interface ParsedWord { value: string; quoted: boolean }
+interface ParsedWord { value: string; quoted: boolean }
 
+/** A command together with the operator that separated it from the next one. */
 interface Segment { words: ParsedWord[]; operator?: string }
 
 /**

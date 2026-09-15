@@ -3,7 +3,7 @@ import { AssistantMessageComponent, getMarkdownTheme } from "@earendil-works/pi-
 import { compositeTuiLine, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { loadThemeFromPath, setThemeInstance } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { compactThinking, ReviewDialog, reviewText, showReview } from "../extensions/compact-workflow/ui.js";
-import { CommandOutputComponent, DiffComponent, diffCounts, shellRenderers } from "../extensions/compact-workflow/renderers.js";
+import { CommandOutputComponent, DiffComponent, diffCounts, recordExecutionTime, shellRenderers } from "../extensions/compact-workflow/renderers.js";
 import { fileURLToPath } from "node:url";
 
 const theme = loadThemeFromPath(fileURLToPath(new URL(
@@ -90,13 +90,38 @@ describe("command and diff rendering", () => {
   test("diff headers are not counted as changed lines", () => {
     expect(diffCounts("--- a/file\n+++ b/file\n-old\n+new")).toEqual({ added: 1, removed: 1 });
   });
+  test("elapsed time measures the command, not the time spent waiting for approval", () => {
+    // pi announces a tool call before it asks for approval, so a renderer that timed
+    // itself from its own first render would report the user's thinking time as the
+    // command's runtime. Only an explicitly recorded execution time may be shown.
+    const result = { content: [{ type: "text", text: "done" }], details: {} } as any;
+    const context = { toolCallId: "call-1", state: {}, isPartial: false } as any;
+    const before = plain(shellRenderers.renderResult!(result, { expanded: false, isPartial: false }, theme, context).render(60));
+    expect(before).not.toContain("耗时");
+    recordExecutionTime("call-1", 1100);
+    const after = plain(shellRenderers.renderResult!(result, { expanded: false, isPartial: false }, theme, context).render(60));
+    expect(after).toContain("耗时 1.1s");
+    // Re-rendering later (expand, resize, another redraw) must not restate the number.
+    const again = plain(shellRenderers.renderResult!(result, { expanded: false, isPartial: false }, theme, context).render(60));
+    expect(again).toBe(after);
+    // A second call is timed independently of the first.
+    recordExecutionTime("call-2", 2400);
+    const other = plain(shellRenderers.renderResult!(result, { expanded: false, isPartial: false }, theme,
+      { ...context, toolCallId: "call-2" }).render(60));
+    expect(other).toContain("耗时 2.4s");
+    // A partial (still running) render must not claim a finished duration.
+    recordExecutionTime("call-3", 900);
+    const partial = plain(shellRenderers.renderResult!(result, { expanded: false, isPartial: true }, theme,
+      { ...context, toolCallId: "call-3", isPartial: true }).render(60));
+    expect(partial).not.toContain("耗时");
+  });
 });
 
 describe("review dialog", () => {
   const make = (approval = true) => {
     const decisions: boolean[] = [];
     const body = Array.from({ length: 100 }, (_, i) => "行 " + i + "：完整命令预览").join("\n");
-    const dialog = new ReviewDialog("授权", body, theme, approval, () => 24, () => {}, (value) => decisions.push(value));
+    const dialog = new ReviewDialog("需要用户授权", body, theme, approval, () => 24, () => {}, (value) => decisions.push(value));
     return { dialog, decisions };
   };
   for (const key of ["\x1b", "\x03", "n", "2"]) {
@@ -174,16 +199,24 @@ describe("review dialog", () => {
       dialog.dispose();
     });
   }
-  test("panel frame avoids the warning colour and highlights only the active choice", () => {
+  test("panel frame avoids the warning colour and accents the heading and choices", () => {
     const { dialog } = make();
     const rendered = dialog.render(80).join("\n");
-    // Gold came from the `warning` role, which the footer's context gauge still needs.
-    // The strip sits on the terminal's own background and marks the active row with a
-    // highlight bar rather than the accent colour used elsewhere for links.
+    // Gold comes from the `warning` role, which the footer's context gauge still needs.
+    // The accent colour marks what the user is deciding on: the heading and the two
+    // choices. The command body stays neutral gray so it reads as content, not prompt.
+    const accent = theme.getFgAnsi("accent");
     expect(rendered).not.toContain(theme.getFgAnsi("warning"));
-    expect(rendered).not.toContain(theme.getFgAnsi("accent"));
+    expect(rendered).toContain(accent);
     expect(rendered).toContain(theme.getFgAnsi("muted"));
     expect(rendered).toContain(theme.getBgAnsi("selectedBg"));
+    const lines = dialog.render(80);
+    const headingLine = lines.find((line) => stripTerminalSequences(line).includes("需要用户授权"))!;
+    expect(headingLine).toContain(accent);
+    for (const label of ["1. 允许本次操作", "2. 拒绝并停止"]) {
+      const choiceLine = lines.find((line) => stripTerminalSequences(line).includes(label))!;
+      expect(choiceLine).toContain(accent);
+    }
     dialog.dispose();
   });
   test("narrow panels keep readable choice labels", () => {

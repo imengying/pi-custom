@@ -7,6 +7,30 @@ type Renderers = Required<Pick<ToolDefinition<any, any, any>, "renderCall" | "re
 type DiffKind = "added" | "removed" | "context";
 interface DiffRow { text: string; kind: DiffKind }
 
+/**
+ * How long a command actually ran, keyed by tool call id.
+ *
+ * pi announces the tool call before it asks for approval, so anything timed from
+ * the call's own first render would silently include however long the user took to
+ * answer the dialog. Timing is therefore recorded around the real execution in
+ * `index.ts` and read back here. Entries deliberately outlive the tool call: the
+ * final render happens after execution ends, and a late re-render (expand, resize)
+ * must keep reporting the same number instead of recomputing it.
+ */
+const executionTimes = new Map<string, number>();
+const EXECUTION_TIME_LIMIT = 200;
+
+export function recordExecutionTime(toolCallId: string, durationMs: number): void {
+  // Re-inserting keeps the most recently finished calls at the end of the map.
+  executionTimes.delete(toolCallId);
+  executionTimes.set(toolCallId, durationMs);
+  while (executionTimes.size > EXECUTION_TIME_LIMIT) {
+    const oldest = executionTimes.keys().next().value;
+    if (oldest === undefined) break;
+    executionTimes.delete(oldest);
+  }
+}
+
 function resultText(result: { content?: Array<{ type: string; text?: string }> }): string {
   return displayText((result.content ?? []).filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n")).trimEnd();
 }
@@ -95,7 +119,6 @@ export class CommandOutputComponent {
 
 export const shellRenderers: Renderers = {
   renderCall(args, theme, context) {
-    if (context.executionStarted && context.state.startedAt === undefined) context.state.startedAt = Date.now();
     const input = args as Record<string, unknown>;
     const raw = typeof input.command === "string" ? displayText(input.command).trim() : "…";
     return {
@@ -120,9 +143,9 @@ export const shellRenderers: Renderers = {
       if (footer !== -1 && output.slice(footer).includes(fullOutputPath)) output = output.slice(0, footer).trimEnd();
     }
     const footer: string[] = [];
-    if (!options.isPartial && typeof context.state.startedAt === "number") {
-      context.state.finishedAt ??= Date.now();
-      footer.push("耗时 " + ((context.state.finishedAt - context.state.startedAt) / 1000).toFixed(1) + "s");
+    const elapsed = executionTimes.get(context.toolCallId);
+    if (!options.isPartial && elapsed !== undefined) {
+      footer.push("耗时 " + (elapsed / 1000).toFixed(1) + "s");
     }
     if (fullOutputPath) footer.push("完整输出: " + fullOutputPath);
     if (result.details?.truncation?.truncated && !fullOutputPath) footer.push("工具返回内容已达长度上限");

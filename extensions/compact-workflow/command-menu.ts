@@ -8,7 +8,6 @@ const HIDDEN_COMMANDS = new Set([
 const CHINESE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   settings: "打开设置菜单",
   model: "<提供方/模型> — 选择模型",
-  tree: "浏览会话树并切换分支",
   thinking: "<级别> — 设置思考强度",
   name: "设置会话名称",
   session: "查看会话信息与用量统计",
@@ -17,7 +16,6 @@ const CHINESE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   resume: "选择并继续历史会话",
   reload: "重新加载扩展、主题、技能和配置",
   quit: "退出 pi",
-  thoughts: "查看最近一次完整思考",
   permissions: "查看高危操作授权规则",
 };
 

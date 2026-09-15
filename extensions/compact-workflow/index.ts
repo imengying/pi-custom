@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { PermissionGate } from "./guard.js";
 import { currentShellDialect, currentShellPath, dialectForShellPath, setShellDialect } from "./policy.js";
-import { shellRenderers, editRenderers, writeRenderers } from "./renderers.js";
+import { shellRenderers, editRenderers, writeRenderers, recordExecutionTime } from "./renderers.js";
 import { compactThinking, showReview } from "./ui.js";
 import { createChineseCommandMenu } from "./command-menu.js";
 import { installCompactFooter } from "./compact-footer.js";
@@ -183,9 +183,15 @@ export default function compactWorkflow(pi: ExtensionAPI): void {
       // Defensive: the dialect must be settled before beforeExecute assesses args.
       const config = shellConfig(ctx.cwd);
       const decision = await gate.beforeExecute(id, "bash", args, ctx);
-      return createBashToolDefinition(ctx.cwd, config).execute(
-        id, { ...args, command: decision.safeCommand ?? args.command }, signal, onUpdate, ctx,
-      );
+      // Approval has already happened by now; only this section is execution.
+      const startedAt = Date.now();
+      try {
+        return await createBashToolDefinition(ctx.cwd, config).execute(
+          id, { ...args, command: decision.safeCommand ?? args.command }, signal, onUpdate, ctx,
+        );
+      } finally {
+        recordExecutionTime(id, Date.now() - startedAt);
+      }
     },
   });
 
