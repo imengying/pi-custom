@@ -115,53 +115,48 @@ export class ReviewDialog {
 
   private renderApproval(width: number): string[] {
     const height = Math.max(1, Math.min(22, this.rows()));
-    const innerWidth = Math.max(1, width - 4);
+    const innerWidth = Math.max(1, width - 2);
     const content = wrapTextWithAnsi(this.body, innerWidth);
-    // Keep the title and choices visible even when scrolling is needed. Both layouts
-    // reserve their fixed rows, so the total is never taller than the terminal:
-    // compact = top border + title + 2 choices, full adds a separator and a bottom
-    // border. The final slice() is a hard guarantee even if that ever changes.
-    const compact = height < 9;
-    this.pageSize = Math.max(1, height - (compact ? 4 : 6));
+    // Docked rather than floating: a full-width strip flush with the last screen
+    // row, separated from the transcript by a rule instead of a closed box. The
+    // title and both choices always keep their rows, so scrolling can never hide
+    // the decision, and the final slice() is a hard guarantee on the height.
+    const dock = height >= 5;          // the rule needs a row of its own
+    const divider = height >= 8;       // one more rule only when content still fits
+    const fixed = (dock ? 4 : 3) + (divider ? 1 : 0); // rule(s) + title + 2 choices
+    this.pageSize = Math.max(0, height - fixed);
     this.maxOffset = Math.max(0, content.length - this.pageSize);
     this.offset = Math.min(this.offset, this.maxOffset);
-    // The panel is already identified by its fill and position, so the frame stays in
-    // the theme's neutral gray-white range: the gold `warning` role is left to actual
-    // warnings (the footer's context gauge). Only the active choice carries colour.
-    const border = (left: string, right: string) => this.theme.fg("muted",
-      width > 1 ? left + "─".repeat(width - 2) + right : "─");
+    // Body and frame stay in the theme's neutral gray range on the terminal's own
+    // black background: the gold `warning` role is reserved for real warnings (the
+    // footer's context gauge) and `accent` for links, so the active row is marked
+    // by brightness, its highlight bar and the `›` cursor instead.
+    const rule = () => this.theme.fg("borderMuted", "─".repeat(Math.max(0, width)));
     const row = (text: string, selected = false) => {
-      const textWidth = Math.max(0, width - 4);
+      const textWidth = Math.max(0, width - 2);
       const padded = padLine(truncateToWidth(text, textWidth), textWidth);
-      return width >= 4
-        ? this.theme.fg("muted", "│") + this.theme.bg(selected ? "selectedBg" : "userMessageBg", " " + padded + " ") + this.theme.fg("muted", "│")
-        : truncateToWidth(text, width);
+      return this.theme.bg(selected ? "selectedBg" : "customMessageBg", " " + padded + " ");
     };
-    // The row() padding leaves width - 4 usable columns. Shorten the choice labels
-    // before truncation would turn them into "1..." on a narrow terminal.
-    const labels = width - 4 >= 11 ? ["1. 允许本次操作", "2. 拒绝并停止"]
+    // row() leaves width - 2 usable columns. Shorten the choice labels before
+    // truncation would turn them into "1..." on a narrow terminal.
+    const labels = width - 2 >= 13 ? ["1. 允许本次操作", "2. 拒绝并停止"]
       : ["1. 允许", "2. 拒绝"];
     const choice = (allow: boolean) => {
       const selected = this.allowSelected === allow;
-      return row(this.theme.fg(selected ? "accent" : "text",
+      return row(this.theme.fg(selected ? "muted" : "dim",
         (selected ? "› " : "  ") + labels[allow ? 0 : 1]), selected);
     };
-    const lines = height < 6 ? [
-      ...(height >= 3 ? [row(this.theme.fg("text", this.title))] : []),
+    const lines = [
+      ...(dock ? [rule()] : []),
+      ...(height >= 3 ? [row(this.theme.fg("muted", this.theme.bold(this.title)) +
+        (this.title.includes("等待确认") ? "" : this.theme.fg("dim", " · 等待确认")))] : []),
+      ...content.slice(this.offset, this.offset + this.pageSize).map((text) => row(this.theme.fg("muted", text))),
+      ...(divider ? [rule()] : []),
       choice(true),
       choice(false),
-    ] : [
-      border("╭", "╮"),
-      row(this.theme.fg("text", this.theme.bold(this.title)) +
-        (this.title.includes("等待确认") ? "" : this.theme.fg("muted", " · 等待确认"))),
-      ...content.slice(this.offset, this.offset + this.pageSize).map((text) => row(this.theme.fg("text", text))),
-      ...(compact ? [] : [border("├", "┤")]),
-      choice(true),
-      choice(false),
-      ...(compact ? [] : [border("╰", "╯")]),
     ];
     // Paint every cell, including trailing whitespace, so chat never bleeds through.
-    return lines.slice(0, height).map((line) => this.theme.bg("userMessageBg", padLine(truncateToWidth(line, width), width)));
+    return lines.slice(0, height).map((line) => this.theme.bg("customMessageBg", padLine(truncateToWidth(line, width), width)));
   }
 
   invalidate(): void {}

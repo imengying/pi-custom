@@ -5,7 +5,7 @@ import {
   type ExtensionAPI, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { PermissionGate } from "./guard.js";
-import { currentShellDialect, dialectForShellPath, setShellDialect } from "./policy.js";
+import { currentShellDialect, currentShellPath, dialectForShellPath, setShellDialect } from "./policy.js";
 import { shellRenderers, editRenderers, writeRenderers } from "./renderers.js";
 import { compactThinking, showReview } from "./ui.js";
 import { createChineseCommandMenu } from "./command-menu.js";
@@ -25,7 +25,7 @@ const shellConfigs = new Map<string, ShellConfig>();
  * policy dialect with it. Detection is best-effort and never blocks the tool.
  */
 function detectShellDialect(config: ShellConfig): void {
-  setShellDialect(dialectForShellPath(config.shellPath));
+  setShellDialect(dialectForShellPath(config.shellPath), config.shellPath);
 }
 
 /**
@@ -137,7 +137,7 @@ export default function compactWorkflow(pi: ExtensionAPI): void {
         "  PgUp/PgDn、j/k、Home/End 滚动；等待确认没有超时\n" +
         "  授权只对当次操作有效，没有永久放行前缀\n\n" +
         "shell：" + (currentShellDialect() === "zsh"
-          ? "zsh（按设置中的 shellPath；=命令 展开需授权）"
+          ? (currentShellPath() ?? "zsh") + "（=命令 展开需授权）"
           : "bash（pi 默认；shellPath 设为 /usr/bin/zsh 可切换）") +
         "\n工作目录：" + ctx.cwd + "\n" +
         "系统级沙箱未由此扩展启用，不能作为不可信代码的隔离边界。");

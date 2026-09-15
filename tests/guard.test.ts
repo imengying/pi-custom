@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync, rmSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionGate } from "../extensions/compact-workflow/guard.js";
+import { setShellDialect } from "../extensions/compact-workflow/policy.js";
 
 const root = mkdtempSync(join(tmpdir(), "pi-guard-test-"));
 const cwd = join(root, "work");
@@ -59,6 +60,26 @@ describe("permission decisions", () => {
     expect(body).toContain("preview");
     // The panel is deliberately label-free: no 完整操作/原因/工作目录/实际目标 lines.
     for (const label of ["完整操作", "原因:", "工作目录:", "实际目标:"]) expect(body).not.toContain(label);
+  });
+  test("shell approval names the shell that will actually run the command", async () => {
+    // pi names this tool `bash` on every platform, so the title alone would hide
+    // whether zsh or bash runs the command. The resolved shell is shown for clarity.
+    const titles: string[] = [];
+    const gate = new PermissionGate(async (_ctx, heading) => { titles.push(heading); return false; });
+    try {
+      setShellDialect("zsh", "/usr/bin/zsh");
+      await gate.preflight("id", "bash", dangerous, context());
+      expect(titles.at(-1)).toBe("需要用户授权 · bash（/usr/bin/zsh）");
+      // Without shellPath, pi uses its own default: say so rather than implying zsh.
+      setShellDialect("bash", undefined);
+      await gate.preflight("id", "bash", dangerous, context());
+      expect(titles.at(-1)).toBe("需要用户授权 · bash（bash）");
+      // Non-shell tools carry no shell suffix at all.
+      await gate.preflight("id", "write", { path: "../outside-file", content: "x" }, context());
+      expect(titles.at(-1)).toBe("需要用户授权 · write");
+    } finally {
+      setShellDialect("bash", undefined);
+    }
   });
   test("changing the symlink target invalidates write approval", async () => {
     const first = join(root, "first");

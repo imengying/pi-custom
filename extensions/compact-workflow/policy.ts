@@ -24,13 +24,24 @@ const allow = (): Assessment => ({ approval: false, reasons: [] });
 
 /** The shell that will run rewritten commands, resolved once per pi process. */
 let dialect: ShellDialect = "bash";
+let shellPath: string | undefined;
 
-export function setShellDialect(next: ShellDialect): void {
+export function setShellDialect(next: ShellDialect, path?: string): void {
   dialect = next;
+  shellPath = path;
 }
 
 export function currentShellDialect(): ShellDialect {
   return dialect;
+}
+
+/**
+ * The configured `shellPath`, or undefined when pi falls back to its built-in default.
+ * Surfaced in the approval title because pi names the tool `bash` on every platform,
+ * which otherwise hides whether zsh or bash will actually run the command.
+ */
+export function currentShellPath(): string | undefined {
+  return shellPath;
 }
 
 export function dialectForShellPath(shellPath: string | undefined): ShellDialect {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assessTool, canonicalPath, currentShellDialect, resolveToolPath, type Assessment } from "./policy.js";
+import { assessTool, canonicalPath, currentShellDialect, currentShellPath, resolveToolPath, type Assessment } from "./policy.js";
 import { showReview } from "./ui.js";
 
 type Review = typeof showReview;
@@ -55,7 +55,14 @@ export class PermissionGate {
       const signal = ctx.signal ? AbortSignal.any([controller.signal, ctx.signal]) : controller.signal;
       const payload = (name === "bash" || name === "powershell") && typeof input.command === "string"
         ? input.command : JSON.stringify(input, null, 2);
-      const accepted = await this.review(ctx, "需要用户授权 · " + name, payload, true, signal);
+      // `bash` is pi's tool NAME on every platform, so it says nothing about the shell
+      // that will run the command. Show the resolved shell above the payload so the
+      // approval always states what will actually execute it.
+      const shell = name === "bash" || name === "powershell"
+        ? currentShellPath() ?? (currentShellDialect() === "zsh" ? "zsh" : "bash")
+        : undefined;
+      const title = "需要用户授权 · " + name + (shell ? "（" + shell + "）" : "");
+      const accepted = await this.review(ctx, title, payload, true, signal);
       return accepted && !signal.aborted && epoch === this.epoch;
     } catch {
       // UI errors and unsupported (e.g. headless) UI must never grant access.

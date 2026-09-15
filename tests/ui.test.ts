@@ -162,7 +162,7 @@ describe("review dialog", () => {
         const rendered = dialog.render(width);
         expect(rendered.length).toBeLessThanOrEqual(height);
         expect(rendered.every((line) => visibleWidth(line) === width)).toBe(true);
-        expect(rendered.every((line) => line.startsWith(theme.getBgAnsi("userMessageBg")))).toBe(true);
+        expect(rendered.every((line) => line.startsWith(theme.getBgAnsi("customMessageBg")))).toBe(true);
         expect(plain(rendered)).toContain("1. 允许本次操作");
         expect(plain(rendered)).toContain("2. 拒绝并停止");
         if (height >= 6) expect(plain(rendered)).toContain("LAST");
@@ -178,9 +178,12 @@ describe("review dialog", () => {
     const { dialog } = make();
     const rendered = dialog.render(80).join("\n");
     // Gold came from the `warning` role, which the footer's context gauge still needs.
+    // The strip sits on the terminal's own background and marks the active row with a
+    // highlight bar rather than the accent colour used elsewhere for links.
     expect(rendered).not.toContain(theme.getFgAnsi("warning"));
+    expect(rendered).not.toContain(theme.getFgAnsi("accent"));
     expect(rendered).toContain(theme.getFgAnsi("muted"));
-    expect(rendered).toContain(theme.getFgAnsi("accent"));
+    expect(rendered).toContain(theme.getBgAnsi("selectedBg"));
     dialog.dispose();
   });
   test("narrow panels keep readable choice labels", () => {
