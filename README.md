@@ -1,24 +1,77 @@
-这是为 pi 0.85.1 配置的紧凑显示和执行授权扩展，配合全局 `codex-dark` 主题使用。
+# pi 紧凑显示与执行授权扩展
 
-配色参考 Codex CLI：正文使用终端默认前景色，思考、输出和底栏使用不同层次的中性灰；边框和标题采用灰白，普通命令使用终端原有背景。用户消息使用浅一层的深灰底色，链接与选中项保留少量蓝青色，状态和修改差异使用红绿配色。暗色差异底色参考 [Codex 的差异渲染](https://github.com/openai/codex/blob/main/codex-rs/tui/src/diff_render.rs)（新增 `#213a2b`、删除 `#4a221d`），整体层次参考其[界面样式](https://github.com/openai/codex/blob/main/codex-rs/tui/src/style.rs)。
+为 pi 0.85.1 准备的扩展，配合 `codex-dark` 主题使用。它做两件事：让聊天记录更紧凑，以及让每个有风险的操作在执行前先问你。
 
-斜杠菜单已隐藏 `scoped-models`、`import`、`export`、`share`、`copy`、`hotkeys`、`fork`、`clone`、`trust`、`llama`、`login`、`logout`、`changelog`、`thoughts`、`tree`。其余当前命令的说明已汉化，命令名称保持原来的输入形式。这是通过公开补全接口进行的菜单精简；直接输入原命令仍可使用，Pi 的更新机制和项目授权检查照常运行。
+## 界面
 
-界面还通过 pi 的全局配置精简：`quietStartup: true` 隐藏启动提示，`collapseChangelog: true` 收起更新日志，`enableSkillCommands: false` 关闭技能快捷菜单。技能仍可按需使用，更新检查照常运行。
+- **思考**：生成时只显示最近两行并持续刷新，结束后收成一行「思考完成」。原始内容仍保存在会话里，用 `/thoughts` 可在独立只读窗口查看，不会铺满聊天记录。需要全局设置 `hideThinkingBlock: false`。
+- **命令输出**：默认显示末尾 5 行，多行命令本身也缩成一行标题。`Ctrl+O` 展开或收起，新一轮任务自动收起。手动 `!` / `!!` 命令沿用 pi 原生预览（最多 20 行），同样经过授权检查。
+- **文件修改**：红底删除、绿底新增，带行号和增删统计，默认预览 14 行；大段替换会同时展示新旧内容。新建文件算新增，覆盖文件显示实际差异；过大的写入跳过差异计算以免卡顿。
+- **底栏**：`↑ 175k   ↓ 174k   󱘲 99.5%   17.3k/1.0M`，依次是累计输入、累计输出、最近一次请求的缓存命中率、当前上下文 token 数与容量。缓存图标是 Nerd Fonts 的数据库轮廓（U+F1632）。上下文超过容量 70% / 90% 时显示警告色 / 错误色，压缩后暂不可知时显示 `?`。目录、Git 分支、会话名和思考等级照常显示。
+- **斜杠菜单**：隐藏了 `scoped-models`、`import`、`export`、`share`、`copy`、`hotkeys`、`fork`、`clone`、`trust`、`llama`、`login`、`logout`、`changelog`、`thoughts`、`tree`，其余说明已汉化。直接输入原命令仍然可用。
 
-- 思考生成时只显示最近两行，内容持续刷新；生成结束后显示一行摘要。原始思考保留在会话中，输入 `/thoughts` 可以在独立的只读窗口查看，不会铺满聊天记录。全局 `hideThinkingBlock` 需为 `false`，由显示转换器控制预览。
-- AI 命令输出默认显示末尾 5 个屏幕行，多行命令本身也收成一行标题。`Ctrl+O` 展开或收起完整输出，新一轮任务重新收起。手动 `!` / `!!` 命令继续使用 pi 原生的有限预览（最多 20 行），同样经过授权检查。
-- 文件修改显示红底删除、绿底新增、行号和增删统计，默认最多预览 14 行；大量替换时会同时展示旧内容和新内容。新建文件显示为新增，覆盖文件显示实际前后差异。过大的覆盖写入省略差异计算，以免界面卡顿。
-- 底栏显示 `↑ 175k   ↓ 174k   󱘲 99.5%   17.3k/1.0M`，依次为累计输入、累计输出、最近一次请求的缓存命中率、当前上下文 token 数与容量。图标与数值间留一个空格，各项间用三个空格分隔。缓存使用 Nerd Fonts 的数据库轮廓图标（U+F1632），不再显示竖线、R/W 累计量、CH 标签或 `(auto)`；模型名前不显示 `(work)` 等提供商前缀。上下文数值由 pi 实际统计，压缩后暂不可知时显示 `?`，超过容量 70% / 90% 时保留警告色 / 错误色。目录、Git 分支、会话名和思考等级继续显示。
-- 授权面板固定在终端底部，使用完整底色和醒目边框，优先展示完整操作，再显示原因、工作目录；文件操作还显示解析符号链接后的实际目标。默认选中“允许本次操作”，`↑↓` / `Tab` 切换选项，`Enter` 确认；`a` / `1` 允许本次，`Esc` / `2` / `n` 拒绝。`Page Up` / `Page Down`、`j` / `k`、`Home` / `End` 滚动详情，选项始终可见。等待确认没有超时，命令执行超时从批准后开始计算；任务取消或会话结束仍会撤销待处理授权，没有永久放行前缀。
+## 授权
 
-简单的字面量只读命令可以自动执行；目录内普通文件的 `edit` / `write` 也可自动执行。删除、提权、Git 写操作、网络传输、脚本、重定向、变量或命令替换、未知选项、自定义工具，以及目录外或受保护路径的写入均需要授权。简单只读命令会改用系统可执行文件；Git 只读命令另外禁用外部 diff、textconv、pager、fsmonitor 和 hooks。修改审批参数或符号链接目标后会重新检查。无交互界面、取消、检查失败时，需要授权的操作会被阻止。
+需要授权的操作会在终端底部弹出面板，原文显示将要执行的命令或参数，默认选中「允许本次操作」。
 
-输入 `/permissions` 可查看当前规则。这里实现的是 pi 执行入口的审批层，系统级沙箱没有由此扩展启用。已授权脚本的内部行为、已有 shell/Git 配置，以及其他扩展直接运行的代码仍依赖 pi 本身和本机环境；不能将它作为不可信代码的隔离边界。OpenAI 官方文档也将[审批策略和系统沙箱](https://developers.openai.com/codex/cli/reference/)列为不同控制项。
+- `↑↓` / `Tab` 切换选项，`Enter` 确认
+- `a` / `1` 允许本次，`Esc` / `2` / `n` 拒绝
+- `Page Up` / `Page Down`、`j` / `k`、`Home` / `End` 滚动长命令
+- 等待确认没有超时；命令超时从批准后开始计算
+- 授权只对当次操作有效，没有永久放行前缀；取消任务或结束会话会撤销待处理授权
 
-代码入口是 `extensions/compact-workflow/index.ts`，使用 pi 的公开扩展 API。`policy.ts` 负责权限分类，`guard.ts` 负责逐次授权，`ui.ts` 和 `renderers.ts` 负责预览、查看窗口和红绿差异，`compact-footer.ts` 负责底栏显示。
+### 自动执行
 
-开发验证：
+- 简单的字面量只读命令（`ls`、`cat`、`grep`、`git status`、`sed -n '1p'` 等）
+- 当前目录内普通文件的 `edit` / `write`
+
+### 需要授权
+
+- 删除、提权、Git 写操作、网络传输、脚本、重定向、变量或命令替换、未知选项、自定义工具
+- 目录外或受保护路径的写入
+- 凭据与敏感配置：`.env*`、`.ssh`、`.gnupg`、`.aws`、`.kube`、`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`、`.gitconfig`、`.bash_history`、`.pgpass`、`~/.config/gh`、`~/.config/gcloud`、`~/.docker` 等目录与文件，以及 `id_rsa`、`credentials.json`、`service-account*.json`、`*.pem`、`*.key` 一类名称
+
+检查逐个参数进行（包括 `--file=...` 这类选项值），所以 `grep -r KEY .ssh` 和 `cat id_rsa` 也会先询问；`echo`、`printf` 等以数据为参数的命令不参与路径检查。
+
+自动放行的只读命令会改用系统可执行文件执行，Git 只读命令额外禁用外部 diff、textconv、pager、fsmonitor 和 hooks。改过参数或符号链接目标后会重新检查；没有交互界面、被取消或检查失败时，需要授权的操作不会执行。
+
+输入 `/permissions` 可以随时查看当前规则。
+
+## 使用 zsh
+
+pi 在 Unix 上固定用 `/bin/bash`，不读取 `$SHELL`。想让命令真正跑在 zsh 里，需要在 `~/.pi/agent/settings.json` 指定：
+
+```json
+{ "shellPath": "/usr/bin/zsh" }
+```
+
+设置后扩展会切换到 zsh 并同步启动它执行命令。zsh 比 bash 多一类 `=命令` 展开（`=ls` → `/usr/bin/ls`），会被单引号阻止，因此这种写法改为请求授权；源码里已经用引号或反斜杠保护的写法（`'=ls'`、`"=ls"`、`\=ls`）在 zsh 下本来就是字面量，照常自动执行。`~+` / `~-` 这类目录栈路径也会询问。未设置 `shellPath` 时行为与之前一致。
+
+## 安装
+
+1. 把 `extensions/compact-workflow/` 下的所有 `.ts` 文件复制到 `~/.pi/agent/extensions/compact-workflow/`
+2. 把 `themes/codex-dark.json` 复制到 `~/.pi/agent/themes/`
+3. 在 `~/.pi/agent/settings.json` 中设置：
+
+```json
+{
+  "theme": "codex-dark",
+  "hideThinkingBlock": false,
+  "quietStartup": true,
+  "collapseChangelog": true,
+  "enableSkillCommands": false
+}
+```
+
+前两项是扩展运行所必需的；后三项用于精简启动界面，可选。已打开的 pi 执行 `/reload` 即可生效，重启也会自动加载。
+
+卸载：把 `~/.pi/agent/extensions/compact-workflow/` 移出 extensions 目录后重启，主题和启动偏好可在设置菜单中单独调整。
+
+## 边界
+
+这里实现的是 pi 执行入口的审批层，不启用系统级沙箱。已授权脚本的内部行为、你已有的 shell / Git 配置，以及其他扩展直接运行的代码，都仍受 pi 本身和本机环境约束——它不能当作运行不可信代码的隔离边界。OpenAI 官方文档也把[审批策略和系统沙箱](https://developers.openai.com/codex/cli/reference/)列为两项独立控制。
+
+## 开发
 
 ```sh
 bun install --ignore-scripts
@@ -26,6 +79,4 @@ bun run typecheck
 bun test
 ```
 
-安装目录为 `~/.pi/agent/extensions/compact-workflow/`。测试依赖仅位于本项目的 `node_modules`，扩展运行时复用 pi 提供的模块。将扩展目录中的所有 `.ts` 文件复制到全局扩展目录，将 `themes/codex-dark.json` 复制到 `~/.pi/agent/themes/`，在全局设置中选择 `theme: "codex-dark"`，并保持 `hideThinkingBlock: false`。已打开的 pi 可执行 `/reload`，重启也会自动加载。历史配置备份已按要求清理，后续安装不自动生成新备份。
-
-若要撤回扩展，可将 `~/.pi/agent/extensions/compact-workflow/` 移到 extensions 目录之外后重启；主题与启动界面的偏好可通过 pi 的设置菜单或 `~/.pi/agent/settings.json` 单独调整。
+开发环境为 bun 1.4.0、TypeScript 7.0.2、Node 类型 24。代码入口是 `extensions/compact-workflow/index.ts`，只使用 pi 的公开扩展 API。`policy.ts` 负责权限分类，`guard.ts` 负责逐次授权，`ui.ts` 与 `renderers.ts` 负责预览、查看窗口和红绿差异，`compact-footer.ts` 负责底栏。测试依赖仅位于本项目的 `node_modules`，扩展运行时复用 pi 提供的模块。

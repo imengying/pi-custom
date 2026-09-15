@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { assessTool, canonicalPath, resolveToolPath, type Assessment } from "./policy.js";
+import { assessTool, canonicalPath, currentShellDialect, resolveToolPath, type Assessment } from "./policy.js";
 import { showReview } from "./ui.js";
 
 type Review = typeof showReview;
@@ -55,12 +55,7 @@ export class PermissionGate {
       const signal = ctx.signal ? AbortSignal.any([controller.signal, ctx.signal]) : controller.signal;
       const payload = (name === "bash" || name === "powershell") && typeof input.command === "string"
         ? input.command : JSON.stringify(input, null, 2);
-      const path = input.path ?? input.file_path;
-      const target = ["write", "edit", "read"].includes(name) && typeof path === "string"
-        ? "\n实际目标: " + canonicalPath(resolveToolPath(path, ctx.cwd)) : "";
-      const body = "完整操作:\n" + payload + "\n\n原因: " + decision.reasons.join("\n") +
-        "\n工作目录: " + ctx.cwd + target;
-      const accepted = await this.review(ctx, "需要用户授权 · " + name, body, true, signal);
+      const accepted = await this.review(ctx, "需要用户授权 · " + name, payload, true, signal);
       return accepted && !signal.aborted && epoch === this.epoch;
     } catch {
       // UI errors and unsupported (e.g. headless) UI must never grant access.
@@ -73,7 +68,7 @@ export class PermissionGate {
 
   async preflight(id: string, name: string, input: Record<string, unknown>, ctx: ExtensionContext) {
     try {
-      const decision = assessTool(name, input, ctx.cwd);
+      const decision = assessTool(name, input, ctx.cwd, currentShellDialect());
       // Bind approval to the arguments and resolved target presented to the user.
       const fingerprint = decision.approval ? this.fingerprint(name, input, ctx.cwd) : undefined;
       if (!await this.decide(name, input, decision, ctx)) {
@@ -89,7 +84,7 @@ export class PermissionGate {
   /** Also check at execution time, after any other tool-call hooks have run. */
   async beforeExecute(id: string, name: string, input: Record<string, unknown>, ctx: ExtensionContext): Promise<Assessment> {
     if (ctx.signal?.aborted) throw new Error("操作已取消");
-    const decision = assessTool(name, input, ctx.cwd);
+    const decision = assessTool(name, input, ctx.cwd, currentShellDialect());
     const receipt = this.receipts.get(id);
     this.receipts.delete(id);
     if (decision.approval && receipt && receipt === this.fingerprint(name, input, ctx.cwd)) return decision;
@@ -100,7 +95,7 @@ export class PermissionGate {
   async userCommand(command: string, ctx: ExtensionContext): Promise<Assessment | undefined> {
     try {
       const input = { command };
-      const decision = assessTool("bash", input, ctx.cwd);
+      const decision = assessTool("bash", input, ctx.cwd, currentShellDialect());
       return await this.decide("bash", input, decision, ctx) ? decision : undefined;
     } catch { return undefined; }
   }

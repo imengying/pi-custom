@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assessCommand, assessPath, assessTool, parseLiteralCommands } from "../extensions/compact-workflow/policy.js";
+import { assessCommand, assessPath, assessTool, dialectForShellPath, parseLiteralCommands } from "../extensions/compact-workflow/policy.js";
 
 const root = mkdtempSync(join(tmpdir(), "pi-policy-test-"));
 const cwd = join(root, "work");
@@ -123,7 +123,110 @@ describe("file access", () => {
     expect(assessCommand("cat /etc/shadow", cwd).approval).toBe(true);
     expect(assessCommand("cat .env", cwd).approval).toBe(true);
   });
+  // A directory-only rule misses `grep -r KEY .ssh`, which reaches a private key
+  // without ever naming one, so credential names and directories are both checked.
+  for (const command of [
+    "cat ~/.netrc", "cat ~/.git-credentials", "cat ~/.npmrc", "cat ~/.pypirc",
+    "cat ~/.config/gh/hosts.yml", "cat ~/.config/gcloud/credentials.db",
+    "cat ~/.aws/credentials", "cat ~/.docker/config.json", "cat ~/.kube/config",
+    "cat ~/.bash_history", "cat ~/.zsh_history", "cat ~/.gitconfig",
+    "cat id_rsa", "cat id_ed25519", "cat server.pem", "cat token.key",
+    "cat credentials.json", "cat service-account-prod.json", "cat .pgpass",
+  ]) {
+    test("credential read blocked: " + command, () => {
+      const decision = assessCommand(command, cwd);
+      expect(decision.approval).toBe(true);
+      expect(decision.safeCommand).toBeUndefined();
+    });
+  }
+  for (const command of ["grep -r KEY .ssh", "grep --file=.ssh/id_rsa .", "rg KEY .gnupg", "ls .ssh", "cat .ssh/id_rsa"]) {
+    test("credential directory scan blocked: " + command, () => {
+      expect(assessCommand(command, cwd).approval).toBe(true);
+    });
+  }
+  test("git blob reads check the path after the revision", () => {
+    expect(assessCommand("git show HEAD:.env", cwd).approval).toBe(true);
+    expect(assessCommand("git show HEAD:.ssh/id_rsa", cwd).approval).toBe(true);
+    // Ordinary blobs and option values keep working.
+    expect(assessCommand("git show HEAD:README.md", cwd).approval).toBe(false);
+    expect(assessCommand("git log --pretty=format:%H -1", cwd).approval).toBe(false);
+    expect(assessCommand("git log --date=format:%Y", cwd).approval).toBe(false);
+  });
+  test("a leading ~ is expanded rather than quoted literally", () => {
+    const decision = assessCommand("cat ~/notes.txt", cwd);
+    expect(decision.approval).toBe(false);
+    expect(decision.safeCommand).not.toContain("'~");
+    expect(decision.safeCommand).toContain(join(homedir(), "notes.txt"));
+  });
+  test("a ~user prefix cannot be rewritten and asks instead", () => {
+    expect(assessCommand("cat ~someone/file", cwd).approval).toBe(true);
+  });
+  test("ordinary workspace names stay auto-approved", () => {
+    for (const command of ["cat README.md", "cat notes.txt", "cat src/index.ts", "cat package.json"]) {
+      expect(assessCommand(command, cwd).approval).toBe(false);
+    }
+  });
   test("normal reads may inspect documentation outside the workspace", () => {
     expect(assessPath("read", "/usr/share/doc/readme", cwd).approval).toBe(false);
+  });
+});
+
+describe("zsh dialect", () => {
+  test("only a zsh shell path selects the zsh dialect", () => {
+    for (const path of ["/usr/bin/zsh", "/bin/zsh", "zsh", "/opt/homebrew/bin/zsh", "C:/Program Files/zsh.exe", "/usr/local/bin/zsh.exe"]) {
+      expect(dialectForShellPath(path)).toBe("zsh");
+    }
+    for (const path of [undefined, "", "/bin/bash", "/usr/bin/sh", "/usr/local/bin/fish", "/opt/bash"]) {
+      expect(dialectForShellPath(path)).toBe("bash");
+    }
+  });
+
+  // zsh expands `=cmd` to a command path while bash leaves it alone, so the vetted
+  // command and the executed command would differ. Quotes and escapes in the source
+  // decide this, which is why the parser tracks whether a word's first character was
+  // quoted: `'=ls'` is literal in zsh and therefore safe to rewrite.
+  for (const command of ["printf '%s' =ls", "printf '%s' ''=ls", "printf '%s' =ls extra", "echo =ls"]) {
+    test("unquoted =cmd asks under zsh: " + command, () => {
+      expect(assessCommand(command, cwd, "zsh").approval).toBe(true);
+      // The same command is a harmless literal under bash.
+      expect(assessCommand(command, cwd, "bash").approval).toBe(false);
+    });
+  }
+  for (const command of [
+    "printf '%s' '=ls'",
+    `printf '%s' "=ls"`,
+    `printf '%s' \\=ls`,
+    "echo a=b",
+  ]) {
+    test("quoted or mid-word = stays allowed under zsh: " + command, () => {
+      expect(assessCommand(command, cwd, "zsh").approval).toBe(false);
+    });
+  }
+  test("zsh directory-stack paths ask instead of being guessed", () => {
+    expect(assessCommand("cat ~+/file", cwd, "zsh").approval).toBe(true);
+    expect(assessCommand("cat ~-/file", cwd, "zsh").approval).toBe(true);
+  });
+  test("a quoted ~ is literal in both shells and needs no expansion", () => {
+    const decision = assessCommand("cat '~/x'", cwd, "zsh");
+    expect(decision.approval).toBe(false);
+    expect(decision.safeCommand).toContain("'~/x'");
+  });
+  test("zsh does not change the ordinary literal subset", () => {
+    for (const command of [
+      "ls -la", "cat notes.txt", "grep -rn import src", "grep '^import' src/a.ts",
+      "find . -name '*.ts'", "sed -n '1p' notes.txt", "git status --short", "pwd && ls",
+    ]) {
+      const decision = assessCommand(command, cwd, "zsh");
+      expect(decision.approval).toBe(false);
+      expect(decision.safeCommand).toBeString();
+    }
+  });
+  test("zsh still refuses every dynamic construct", () => {
+    for (const command of [
+      "echo $(id)", "echo $((1+1))", "ls **/*.ts", "echo <(id)", "cat *.env",
+      "print -l foo", "echo ${^path}", "ls > out.txt", "setopt extendedglob; ls ^foo",
+    ]) {
+      expect(assessCommand(command, cwd, "zsh").approval).toBe(true);
+    }
   });
 });

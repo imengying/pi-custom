@@ -1,10 +1,11 @@
 import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
 import {
   createBashToolDefinition, createEditToolDefinition, createWriteToolDefinition,
-  createLocalBashOperations, generateDiffString,
+  createLocalBashOperations, generateDiffString, SettingsManager,
   type ExtensionAPI, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { PermissionGate } from "./guard.js";
+import { currentShellDialect, dialectForShellPath, setShellDialect } from "./policy.js";
 import { shellRenderers, editRenderers, writeRenderers } from "./renderers.js";
 import { compactThinking, showReview } from "./ui.js";
 import { createChineseCommandMenu } from "./command-menu.js";
@@ -12,6 +13,44 @@ import { installCompactFooter } from "./compact-footer.js";
 
 const MAX_DIFF_BYTES = 128 * 1024;
 const MAX_DIFF_LINES = 2000;
+
+type ShellConfig = { shellPath?: string; commandPrefix?: string };
+
+const shellConfigs = new Map<string, ShellConfig>();
+
+/**
+ * pi only honours an explicit `shellPath` and otherwise hardcodes bash on Unix, so
+ * `$SHELL` is not consulted. A user who wants zsh therefore has to say so in
+ * settings; this mirror detects that case and switches both the spawn and the
+ * policy dialect with it. Detection is best-effort and never blocks the tool.
+ */
+function detectShellDialect(config: ShellConfig): void {
+  setShellDialect(dialectForShellPath(config.shellPath));
+}
+
+/**
+ * pi resolves `shellPath` and `shellCommandPrefix` through SettingsManager before
+ * building the built-in bash tool. Overriding that tool replaces those defaults, so
+ * reuse the same public reader here; otherwise a custom shell or a command prefix
+ * silently stops applying. Reading takes a settings lock, so the result is cached
+ * per directory and dropped on session start, which is also when reload re-reads it.
+ * Failures keep pi's defaults rather than breaking bash.
+ */
+function shellConfig(cwd: string): ShellConfig {
+  const cached = shellConfigs.get(cwd);
+  if (cached) return cached;
+  let config: ShellConfig = {};
+  try {
+    const settings = SettingsManager.create(cwd);
+    config = {
+      shellPath: settings.getShellPath() || undefined,
+      commandPrefix: settings.getShellCommandPrefix() || undefined,
+    };
+  } catch { /* pi's defaults stay in effect. */ }
+  detectShellDialect(config);
+  shellConfigs.set(cwd, config);
+  return config;
+}
 
 function thinkingFromMessage(message: any): string {
   if (message?.role !== "assistant" || !Array.isArray(message.content)) return "";
@@ -48,6 +87,9 @@ export default function compactWorkflow(pi: ExtensionAPI): void {
 
   pi.on("session_start", (_event, ctx) => {
     gate.reset();
+    shellConfigs.clear();
+    // Resolve the shell before the first command so the policy dialect is settled.
+    shellConfig(ctx.cwd);
     latestThinking = restoredThinking(ctx);
     if (!ctx.hasUI) return;
     ctx.ui.addAutocompleteProvider(createChineseCommandMenu);
@@ -82,51 +124,66 @@ export default function compactWorkflow(pi: ExtensionAPI): void {
     description: "查看高危操作授权规则",
     handler: async (_args, ctx) => {
       await showReview(ctx, "当前权限规则",
-        "简单只读命令：自动执行，使用系统可执行文件。\n" +
-        "当前工作目录内的普通文件修改：自动执行。\n" +
-        "删除、提权、Git 写操作、网络操作、脚本、动态 shell 语法：执行前授权。\n" +
-        "目录外写入、敏感文件、代理配置、自定义工具：执行前授权。\n\n" +
-        "底部授权面板：↑↓ 选择，Enter 确认；a / 1 允许本次操作，Esc / 2 拒绝。\n" +
-        "默认选中允许本次操作，等待确认没有超时；命令执行超时从批准后开始计算。\n" +
-        "没有交互界面、取消或检查失败时，需要授权的操作不会执行。\n\n" +
-        "这是 pi 执行入口的审批扩展。系统级沙箱未由此扩展启用；" +
-        "已安装扩展自身的代码、已授权脚本的内部行为仍使用 pi 的系统权限。\n\n" +
-        "工作目录：" + ctx.cwd);
+        "自动执行\n" +
+        "  简单只读命令（ls、cat、grep、git status、sed -n '1p' 等）\n" +
+        "  当前目录内普通文件的 edit / write\n\n" +
+        "需要授权\n" +
+        "  删除、提权、Git 写操作、网络传输、脚本、重定向、变量或命令替换\n" +
+        "  未知选项、自定义工具、目录外或受保护路径的写入\n" +
+        "  凭据与敏感配置：.env*、.ssh、.gnupg、.aws、.kube、.netrc、.npmrc、\n" +
+        "    .git-credentials、~/.config/gh、~/.docker 等，以及 id_rsa、*.pem 等名称\n\n" +
+        "授权面板\n" +
+        "  ↑↓ / Tab 选择，Enter 确认；a / 1 允许本次，Esc / 2 / n 拒绝\n" +
+        "  PgUp/PgDn、j/k、Home/End 滚动；等待确认没有超时\n" +
+        "  授权只对当次操作有效，没有永久放行前缀\n\n" +
+        "shell：" + (currentShellDialect() === "zsh"
+          ? "zsh（按设置中的 shellPath；=命令 展开需授权）"
+          : "bash（pi 默认；shellPath 设为 /usr/bin/zsh 可切换）") +
+        "\n工作目录：" + ctx.cwd + "\n" +
+        "系统级沙箱未由此扩展启用，不能作为不可信代码的隔离边界。");
     },
   });
 
-  pi.on("tool_call", (event, ctx) =>
-    gate.preflight(event.toolCallId, event.toolName, event.input as Record<string, unknown>, ctx));
+  pi.on("tool_call", (event, ctx) => {
+    // Resolve the shell before assessing: the policy dialect must match the shell
+    // that will run the command, and this hook is where approval is granted.
+    shellConfig(ctx.cwd);
+    return gate.preflight(event.toolCallId, event.toolName, event.input as Record<string, unknown>, ctx);
+  });
   pi.on("tool_execution_end", (event) => gate.finish(event.toolCallId));
 
   pi.on("user_bash", async (event, ctx) => {
+    shellConfig(event.cwd);
     const userContext = { ...ctx, cwd: event.cwd };
-    const decision = await gate.userCommand(event.command, userContext);
-    if (!decision) {
+    if (!await gate.userCommand(event.command, userContext)) {
       return { result: { output: "命令已取消：未获得用户授权。", exitCode: 126, cancelled: true, truncated: false } };
     }
-    const local = createLocalBashOperations();
+    const local = createLocalBashOperations(shellConfig(event.cwd));
     return {
       operations: {
         async exec(command, cwd, options) {
-          // A shell prefix or another hook may have changed the actual command.
-          const actual = command === event.command && cwd === event.cwd ? decision :
-            await gate.userCommand(command, { ...ctx, cwd, signal: options.signal ?? ctx.signal });
-          if (!actual || options.signal?.aborted) throw new Error("命令已取消：未获得用户授权。");
-          return local.exec(actual.safeCommand ?? command, cwd, options);
+          // A prefix or another hook may have changed the actual command, so the
+          // approval is re-checked here instead of reusing the earlier decision.
+          const decision = await gate.userCommand(command, { ...ctx, cwd, signal: options.signal ?? ctx.signal });
+          if (!decision || options.signal?.aborted) throw new Error("命令已取消：未获得用户授权。");
+          return local.exec(decision.safeCommand ?? command, cwd, options);
         },
       },
     };
   });
 
+  // Constructed with the session cwd only so the definition is complete; every
+  // execute() below rebuilds it with ctx.cwd and the user's shell settings.
   const bash = createBashToolDefinition(process.cwd());
   pi.registerTool({
     ...bash,
     ...shellRenderers,
     renderShell: "default",
     async execute(id, args, signal, onUpdate, ctx) {
+      // Defensive: the dialect must be settled before beforeExecute assesses args.
+      const config = shellConfig(ctx.cwd);
       const decision = await gate.beforeExecute(id, "bash", args, ctx);
-      return createBashToolDefinition(ctx.cwd).execute(
+      return createBashToolDefinition(ctx.cwd, config).execute(
         id, { ...args, command: decision.safeCommand ?? args.command }, signal, onUpdate, ctx,
       );
     },

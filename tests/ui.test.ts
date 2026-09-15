@@ -115,7 +115,12 @@ describe("review dialog", () => {
   }
   test("Enter confirms the visible selection", () => {
     const { dialog, decisions } = make();
-    expect(plain(dialog.render(80))).toContain("› 1. 允许本次操作");
+    const rows = dialog.render(80);
+    expect(plain(rows)).toContain("› 1. 允许本次操作");
+    // The panel carries no instructional footer or labelled detail lines.
+    for (const text of ["↑↓ 选择", "Enter 确认", "Esc 拒绝", "仅对本次操作有效", "PgUp/PgDn"]) {
+      expect(plain(rows)).not.toContain(text);
+    }
     dialog.handleInput("\x1b[B");
     expect(plain(dialog.render(80))).toContain("› 2. 拒绝并停止");
     expect(decisions).toEqual([]);
@@ -169,6 +174,27 @@ describe("review dialog", () => {
       dialog.dispose();
     });
   }
+  test("panel frame avoids the warning colour and highlights only the active choice", () => {
+    const { dialog } = make();
+    const rendered = dialog.render(80).join("\n");
+    // Gold came from the `warning` role, which the footer's context gauge still needs.
+    expect(rendered).not.toContain(theme.getFgAnsi("warning"));
+    expect(rendered).toContain(theme.getFgAnsi("muted"));
+    expect(rendered).toContain(theme.getFgAnsi("accent"));
+    dialog.dispose();
+  });
+  test("narrow panels keep readable choice labels", () => {
+    const { dialog } = make();
+    const narrow = plain(dialog.render(14));
+    expect(narrow).toContain("1. 允许");
+    expect(narrow).toContain("2. 拒绝");
+    // A label truncated into "1..." would be unreadable, so it must never appear.
+    expect(narrow).not.toMatch(/\d\.\.\./);
+    const wide = plain(dialog.render(100));
+    expect(wide).toContain("1. 允许本次操作");
+    expect(wide).toContain("2. 拒绝并停止");
+    dialog.dispose();
+  });
   test("bottom approval remains pending after an hour and restores working status", async () => {
     jest.useFakeTimers();
     let dialog!: ReviewDialog;
@@ -186,7 +212,7 @@ describe("review dialog", () => {
       jest.advanceTimersByTime(60 * 60 * 1000);
       await Promise.resolve();
       expect(settled).toBe(false);
-      expect(plain(dialog.render(100))).toContain("等待确认，无超时");
+      expect(plain(dialog.render(100))).toContain("等待确认");
       expect(statuses).toEqual(["等待用户授权"]);
       dialog.handleInput("\r");
       expect(await result).toBe(true);

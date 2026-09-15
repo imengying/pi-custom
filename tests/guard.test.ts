@@ -50,14 +50,15 @@ describe("permission decisions", () => {
     await expect(gate.beforeExecute("id", "bash", dangerous, context())).rejects.toThrow();
     expect(prompts).toBe(1);
   });
-  test("file approval shows the resolved target and working directory", async () => {
+  test("file approval shows the literal operation without extra labels", async () => {
     let body = "";
-    const gate = new PermissionGate(async (_ctx, _title, text) => { body = text; return false; });
-    const target = join(root, "outside-file");
+    let title = "";
+    const gate = new PermissionGate(async (_ctx, heading, text) => { title = heading; body = text; return false; });
     await gate.preflight("id", "write", { path: "../outside-file", content: "preview" }, context());
-    expect(body).toContain("实际目标: " + target);
-    expect(body).toContain("工作目录: " + cwd);
+    expect(title).toBe("需要用户授权 · write");
     expect(body).toContain("preview");
+    // The panel is deliberately label-free: no 完整操作/原因/工作目录/实际目标 lines.
+    for (const label of ["完整操作", "原因:", "工作目录:", "实际目标:"]) expect(body).not.toContain(label);
   });
   test("changing the symlink target invalidates write approval", async () => {
     const first = join(root, "first");

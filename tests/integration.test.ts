@@ -1,8 +1,9 @@
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import compactWorkflow from "../extensions/compact-workflow/index.js";
+import { PermissionGate } from "../extensions/compact-workflow/guard.js";
 
 const root = mkdtempSync(join(tmpdir(), "pi-workflow-test-"));
 const cwd = join(root, "workspace");
@@ -45,6 +46,18 @@ test("headless deletion cannot reach the native shell", async () => {
   expect(await handlers.get("tool_call")({ toolCallId: "blocked", toolName: "bash", input: args }, ctx)).toMatchObject({ block: true });
   await expect(tools.get("bash").execute("blocked", args, undefined, undefined, ctx)).rejects.toThrow("未获得用户授权");
   expect(readFileSync(sentinel, "utf8")).toBe("keep");
+});
+
+test("each user_bash command is authorized independently", async () => {
+  const seen: string[] = [];
+  const gate = new PermissionGate(async (_ctx, _title, body) => { seen.push(body); return true; });
+  const interactive = { ...ctx, hasUI: true };
+  expect(await gate.userCommand("rm -f keep-me", interactive)).toBeDefined();
+  // The handler re-validates the command it actually runs, so a hook that swaps in
+  // a different command cannot inherit the earlier approval.
+  const swapped = await gate.userCommand("rm -rf /", interactive);
+  expect(seen).toEqual(["rm -f keep-me", "rm -rf /"]);
+  expect(swapped?.approval).toBe(true);
 });
 
 test("manual ! commands also stop without approval", async () => {
@@ -105,6 +118,53 @@ test("starting a new turn collapses command output", () => {
   let expanded = true;
   handlers.get("agent_start")({}, { ...ctx, hasUI: true, ui: { setToolsExpanded: (value: boolean) => { expanded = value; } } });
   expect(expanded).toBe(false);
+});
+
+test("bash override keeps a user-configured shell prefix working", async () => {
+  // Approval is exercised elsewhere; this test isolates shell-configuration plumbing.
+  const approving = { ...ctx, hasUI: true };
+  // pi applies shellCommandPrefix before running the built-in bash tool. Overriding
+  // that tool replaces the default, so the extension must read the same settings.
+  const settingsPath = join(process.env.HOME ?? "/tmp", ".pi", "agent", "settings.json");
+  const previous = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : undefined;
+  try {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    // The prefix is prepended verbatim by pi, so a literal marker is enough to prove
+    // it survived the override. (A `$VAR` command would ask for approval instead.)
+    writeFileSync(settingsPath, JSON.stringify({ shellCommandPrefix: "printf 'PREFIX-RAN\n'" }));
+    // Settings are cached per directory so a lock is not taken on every call;
+    // session start (what /reload emits) is what makes pi re-read them.
+    handlers.get("session_start")({}, { ...ctx, hasUI: false });
+    const args = { command: "printf 'command-ran'" };
+    expect(await handlers.get("tool_call")({ toolCallId: "prefix", toolName: "bash", input: args }, approving)).toBeUndefined();
+    const result = await tools.get("bash").execute("prefix", args, undefined, undefined, approving);
+    expect(result.content[0].text).toContain("PREFIX-RAN");
+    expect(result.content[0].text).toContain("command-ran");
+  } finally {
+    if (previous === undefined) rmSync(settingsPath, { force: true });
+    else writeFileSync(settingsPath, previous);
+  }
+});
+
+test("a zsh shellPath switches the approval dialect to zsh", async () => {
+  const settingsPath = join(process.env.HOME ?? "/tmp", ".pi", "agent", "settings.json");
+  const previous = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : undefined;
+  try {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({ shellPath: "/usr/bin/zsh" }));
+    handlers.get("session_start")({}, { ...ctx, hasUI: false });
+    // `=cmd` is expanded by zsh but not bash, so it must now need approval.
+    const zshOnly = { command: "printf '%s' =ls" };
+    const blocked = await handlers.get("tool_call")({ toolCallId: "zsh", toolName: "bash", input: zshOnly }, ctx);
+    expect(blocked).toMatchObject({ block: true });
+    // A quoted `=` stays literal in zsh, so it keeps working without approval.
+    const quoted = { command: "printf '%s' '=ls'" };
+    expect(await handlers.get("tool_call")({ toolCallId: "quoted", toolName: "bash", input: quoted }, ctx)).toBeUndefined();
+  } finally {
+    if (previous === undefined) rmSync(settingsPath, { force: true });
+    else writeFileSync(settingsPath, previous);
+    handlers.get("session_start")({}, { ...ctx, hasUI: false });
+  }
 });
 
 test("session startup installs the Chinese menu and compact footer, and clears the old status", () => {

@@ -10,8 +10,32 @@ export interface Assessment {
   safeCommand?: string;
 }
 
+/**
+ * The shell dialect used for the rewrite. Quoting is shared by bash and zsh, but zsh
+ * performs expansions bash does not, and unquoted ones (`=cmd`, `~+`) survive the
+ * plain single quotes this file emits. Those constructs are refused explicitly when
+ * zsh is the shell that will run the rewrite. See `zshRewriteRisk` for why `^foo` is
+ * not treated the same way.
+ */
+export type ShellDialect = "bash" | "zsh";
+
 const ask = (reason: string): Assessment => ({ approval: true, reasons: [reason] });
 const allow = (): Assessment => ({ approval: false, reasons: [] });
+
+/** The shell that will run rewritten commands, resolved once per pi process. */
+let dialect: ShellDialect = "bash";
+
+export function setShellDialect(next: ShellDialect): void {
+  dialect = next;
+}
+
+export function currentShellDialect(): ShellDialect {
+  return dialect;
+}
+
+export function dialectForShellPath(shellPath: string | undefined): ShellDialect {
+  return shellPath && /(?:^|[\\/])zsh(?:\.exe)?$/i.test(shellPath) ? "zsh" : "bash";
+}
 
 export function shellQuote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'";
@@ -53,13 +77,41 @@ function inside(path: string, root: string): boolean {
   return local === "" || (!local.startsWith(".." + sep) && local !== ".." && !isAbsolute(local));
 }
 
-function sensitive(path: string): boolean {
-  const segments = path.split(sep);
-  return segments.some((part) => [".ssh", ".gnupg", ".aws", ".kube"].includes(part)) ||
-    /^\.env(?:$|\.)/.test(basename(path)) ||
-    /(?:^|\/)(?:shadow|gshadow)$/.test(path) ||
-    /\/(?:\.pi|\.codex)\/.*(?:auth|models|credentials).*\.json$/.test(path) ||
-    /\/proc\/(?:self|\d+)\/(?:environ|mem)$/.test(path);
+const SENSITIVE_DIRS = new Set([".ssh", ".gnupg", ".aws", ".kube"]);
+/** Extra directories that count only under the user's home directory. */
+const HOME_DIRS = new Set([".docker", ".azure", ".gcloud"]);
+/** Multi-segment credential locations relative to the home directory. */
+const HOME_PATHS = new Set([".config/gh", ".config/gcloud", ".config/glab-cli", ".config/hub", ".config/doctl"]);
+/** Credential-like names, matched on the basename anywhere: a directory-only rule
+ *  misses `grep -r . .ssh`, which reads private keys without naming one. */
+const SENSITIVE_NAME = /^(?:\.env(?:$|\.)|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.dockercfg|\.gitconfig|\.bash_history|\.zsh_history|\.python_history|\.mysql_history|\.psql_history|\.wgetrc|\.curlrc|\.pgpass|\.authinfo|\.s3cfg|\.terraformrc|\.my\.cnf|\.mylogin\.cnf|\.kubeconfig|\.credentials\.json|\.envrc|\.htpasswd|credentials\.json|application_default_credentials\.json|service[-_]?account[^/]*\.json|hosts\.yml|id_[a-z0-9][^/]*)$/;
+
+/** Private-key containers: the extension alone is enough to ask before reading. */
+const SENSITIVE_SUFFIX = /\.(?:pem|key|pfx|p12|jks|keystore|ppk|kdbx|ovpn)$/i;
+
+function sensitive(path: string, home: string): boolean {
+  const segments = path.split(sep).filter(Boolean);
+  if (segments.some((part) => SENSITIVE_DIRS.has(part))) return true;
+  if (SENSITIVE_NAME.test(basename(path))) return true;
+  if (SENSITIVE_SUFFIX.test(path)) return true;
+  if (/(?:^|\/)(?:shadow|gshadow)$/.test(path)) return true;
+  if (/\/proc\/(?:self|\d+)\/(?:environ|mem)$/.test(path)) return true;
+  // The remaining rules only apply inside the user's own home directory.
+  const local = relative(home, path);
+  if (local === "" || local === ".." || local.startsWith(".." + sep) || isAbsolute(local)) return false;
+  const parts = local.split(sep).filter(Boolean);
+  if (parts.some((part) => HOME_DIRS.has(part))) return true;
+  for (let i = 1; i <= parts.length; i++) {
+    if (HOME_PATHS.has(parts.slice(0, i).join("/"))) return true;
+  }
+  return false;
+}
+
+let homeCache: string | undefined;
+
+/** The canonical home directory, resolved once: it is hit on nearly every check. */
+function homeDirectory(): string {
+  return homeCache ??= canonicalPath(homedir());
 }
 
 export function assessPath(operation: "read" | "write", input: unknown, cwd: string): Assessment {
@@ -67,7 +119,8 @@ export function assessPath(operation: "read" | "write", input: unknown, cwd: str
   try {
     const original = resolveToolPath(input, cwd);
     const target = canonicalPath(original);
-    if (sensitive(original) || sensitive(target)) return ask("目标涉及凭据或敏感配置");
+    const home = homeDirectory();
+    if (sensitive(original, home) || sensitive(target, home)) return ask("目标涉及凭据或敏感配置");
     if (operation === "read") return allow();
     const root = canonicalPath(cwd);
     if (!inside(target, root)) return ask("目标位于当前工作目录之外（已解析符号链接）");
@@ -86,7 +139,15 @@ export function assessPath(operation: "read" | "write", input: unknown, cwd: str
   }
 }
 
-interface Segment { words: string[]; operator?: string }
+/**
+ * One parsed word. zsh decides some expansions from the *source* text rather than the
+ * resulting value: a leading `=` or `~` is expanded only when it was not quoted or
+ * escaped, in which case the quotes are stripped and `quoted` is false. `''=ls` stays
+ * unquoted because an empty quote does not start the word.
+ */
+export interface ParsedWord { value: string; quoted: boolean }
+
+interface Segment { words: ParsedWord[]; operator?: string }
 
 /**
  * Intentionally recognize a small literal-shell subset, not an entire shell.
@@ -95,14 +156,17 @@ interface Segment { words: string[]; operator?: string }
  */
 export function parseLiteralCommands(command: string): Segment[] | string {
   const segments: Segment[] = [];
-  let words: string[] = [];
+  let words: ParsedWord[] = [];
   let word = "";
   let started = false;
+  // A quote or escape only protects expansion when it contributed the first character.
+  let quotedStart = false;
   let quote: "'" | '"' | undefined;
   const flushWord = () => {
-    if (started) words.push(word);
+    if (started) words.push({ value: word, quoted: quotedStart });
     word = "";
     started = false;
+    quotedStart = false;
   };
   const flushSegment = (operator?: string) => {
     flushWord();
@@ -118,7 +182,7 @@ export function parseLiteralCommands(command: string): Segment[] | string {
     }
     if (quote === "'") {
       if (char === "'") quote = undefined;
-      else word += char;
+      else { if (!word) quotedStart = true; word += char; }
       continue;
     }
     if (char === "$" || char.charCodeAt(0) === 96) return "命令含变量、替换或动态 shell 表达式";
@@ -127,17 +191,22 @@ export function parseLiteralCommands(command: string): Segment[] | string {
       else if (char === "\\") {
         const next = command[++i];
         if (next === undefined) return "命令转义不完整";
-        if (next !== "\n") word += ['"', "\\", "$"].includes(next) || next.charCodeAt(0) === 96 ? next : "\\" + next;
-      } else word += char;
+        if (next !== "\n") {
+          if (!word) quotedStart = true;
+          word += ['"', "\\", "$"].includes(next) || next.charCodeAt(0) === 96 ? next : "\\" + next;
+        }
+      } else { if (!word) quotedStart = true; word += char; }
       continue;
     }
     if (char === "'" || char === '"') {
+      // Opening a quote keeps an empty argument alive. The protection flag is set
+      // later, once a character really lands in the word: `''=ls` still expands in zsh.
       quote = char;
       started = true;
     } else if (char === "\\") {
       const next = command[++i];
       if (next === undefined) return "命令转义不完整";
-      if (next !== "\n") { word += next; started = true; }
+      if (next !== "\n") { word += next; started = true; quotedStart = true; }
     } else if (char === "#" && !started) {
       while (i + 1 < command.length && command[i + 1] !== "\n") i++;
     } else if (char === " " || char === "\t" || char === "\r") {
@@ -160,6 +229,9 @@ export function parseLiteralCommands(command: string): Segment[] | string {
   if (segments.length) segments[segments.length - 1].operator = undefined;
   return segments;
 }
+
+/** Commands whose arguments are data rather than paths, so they are not path-checked. */
+const DATA_ARG_COMMANDS = new Set(["echo", "printf", "true", "false", "uname", "df"]);
 
 const READ_COMMANDS = new Set([
   "pwd", "ls", "cat", "head", "tail", "wc", "stat", "readlink", "realpath",
@@ -206,12 +278,55 @@ function knownOptions(args: string[], longFlags: string, short: RegExp): boolean
   return true;
 }
 
-function vetSegment(words: string[], cwd: string): Assessment & { words?: string[] } {
-  const [command, ...args] = words;
-  const name = basename(command);
-  if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(command)) return ask("环境变量赋值可能改变命令的执行方式");
-  const executable = trustedExecutable(command);
+/** A leading ~ survives the quoting rewrite only if it is expanded first. */
+function expandHome(value: string, dialect: ShellDialect): string | undefined {
+  if (value === "~") return homeDirectory();
+  if (value.startsWith("~/")) return canonicalPath(join(homeDirectory(), value.slice(2)));
+  // zsh expands ~+ and ~- to directory-stack entries. Those never reach a quoted
+  // argument as a literal, so the command is sent to the user instead of guessed.
+  if (dialect === "zsh" && (value === "~+" || value === "~-" || value.startsWith("~+/") || value.startsWith("~-/"))) {
+    return undefined;
+  }
+  // A ~user form is left to a human; guessing a home directory here would be wrong.
+  if (value.startsWith("~")) return undefined;
+  return value;
+}
+
+/**
+ * zsh-only spelling that, unlike the quoted rewrite, bash would leave alone. Such a
+ * word means the vetted command and the executed command would differ, so it is sent
+ * to the user rather than translated.
+ *
+ * `EQUALS` (command-path expansion) is the only operator that applies here: it is on
+ * by default and `=ls` is never a real path. `^foo` is deliberately allowed, because
+ * with the option set pi uses it is only a glob (`^` at a word start) or a plain
+ * literal, and `grep '^import'` is far too common to refuse. A leading `=` inside a
+ * longer word (`a=b.txt`) is not an expansion in zsh and is left untouched.
+ */
+function zshRewriteRisk(value: string): boolean {
+  return value.length > 1 && value.startsWith("=");
+}
+
+function vetSegment(words: ParsedWord[], cwd: string, dialect: ShellDialect): Assessment & { words?: string[] } {
+  const [command, ...rawArgs] = words;
+  const name = basename(command.value);
+  if (/^[A-Za-z_][A-Za-z_0-9]*=/.test(command.value)) return ask("环境变量赋值可能改变命令的执行方式");
+  if (dialect === "zsh" && !command.quoted && zshRewriteRisk(command.value)) {
+    return ask("zsh 会对此命令名做 =命令 展开，无法确认实际执行的文件");
+  }
+  const executable = trustedExecutable(command.value);
   if (!executable) return ask(commandReason(name));
+  const args: string[] = [];
+  for (const raw of rawArgs) {
+    // A quoted or escaped leading ~ is literal in both shells, so the rewrite is
+    // already equivalent and nothing has to be expanded or guessed.
+    const expanded = raw.quoted ? raw.value : expandHome(raw.value, dialect);
+    if (expanded === undefined) return ask("参数中含无法可靠解析的 shell 展开（如 ~user 或 zsh 的 ~+）");
+    if (dialect === "zsh" && !raw.quoted && zshRewriteRisk(expanded)) {
+      return ask("参数会被 zsh 的 =命令 展开改写，无法确认实际参数");
+    }
+    args.push(expanded);
+  }
   // Vetted read operations must not sneak in subcommands or output-file flags.
   if (name === "rg" && args.some((arg) => /^--(?:pre|hostname-bin)(?:=|$)/.test(arg))) {
     return ask("搜索参数会启动外部程序");
@@ -260,16 +375,33 @@ function vetSegment(words: string[], cwd: string): Assessment & { words?: string
       return ask("只自动放行 sed 的行范围打印；编辑、脚本及其他参数需要确认");
     }
   }
-  // Check literal path arguments too; shell code is not used to resolve them.
-  for (const arg of args) {
-    if (arg.startsWith("-")) continue;
-    if (arg.includes("/") || arg.startsWith(".env") || arg === "~") {
-      const decision = assessPath("read", arg, cwd);
-      if (decision.approval) return decision;
+  // Check every argument a literal path could hide in, including option values such
+  // as `--file=...`. `cat id_rsa` matters as much as `cat .ssh/id_rsa`, and printing
+  // commands carry data rather than paths, so they are exempt. Shell code is never
+  // used to resolve these.
+  if (!DATA_ARG_COMMANDS.has(name)) {
+    for (const arg of args) {
+      if (arg === "--") continue;
+      const values = arg.startsWith("-") && !arg.startsWith("-/") && !arg.startsWith("-~")
+        ? (arg.includes("=") ? [arg.slice(arg.indexOf("=") + 1)] : [])
+        : [arg];
+      for (const value of values) {
+        if (!value) continue;
+        const decision = assessPath("read", value, cwd);
+        if (decision.approval) return decision;
+      }
     }
   }
   if (name === "git") {
     const [subcommand, ...options] = args;
+    // `<rev>:<path>` reads a blob, so the path after the colon needs the same checks.
+    for (const arg of options) {
+      const colon = arg.indexOf(":");
+      if (colon > 0 && !arg.startsWith("-")) {
+        const decision = assessPath("read", arg.slice(colon + 1), cwd);
+        if (decision.approval) return decision;
+      }
+    }
     if (!["status", "diff", "log", "show", "rev-parse", "ls-files", "ls-tree"].includes(subcommand)) {
       return ask(commandReason("git"));
     }
@@ -300,7 +432,7 @@ function vetSegment(words: string[], cwd: string): Assessment & { words?: string
   return { ...allow(), words: [executable, ...args] };
 }
 
-export function assessCommand(command: unknown, cwd: string): Assessment {
+export function assessCommand(command: unknown, cwd: string, dialect: ShellDialect = "bash"): Assessment {
   if (typeof command !== "string" || !command.trim()) return ask("命令为空或格式不正确");
   if (command.length > 128 * 1024) return ask("命令过长，无法自动判断");
   const parsed = parseLiteralCommands(command);
@@ -308,16 +440,22 @@ export function assessCommand(command: unknown, cwd: string): Assessment {
   if (!parsed.length) return ask("未找到可执行命令");
   const normalized: string[] = [];
   for (const segment of parsed) {
-    const decision = vetSegment(segment.words, cwd);
+    const decision = vetSegment(segment.words, cwd, dialect);
     if (decision.approval) return decision;
-    normalized.push((decision.words ?? segment.words).map(shellQuote).join(" "));
+    const words = decision.words ?? segment.words.map((word) => word.value);
+    normalized.push(words.map(shellQuote).join(" "));
     if (segment.operator) normalized.push(segment.operator);
   }
   return { ...allow(), safeCommand: normalized.join(" ") };
 }
 
-export function assessTool(name: string, input: Record<string, unknown>, cwd: string): Assessment {
-  if (name === "bash") return assessCommand(input.command, cwd);
+export function assessTool(
+  name: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  dialect: ShellDialect = "bash",
+): Assessment {
+  if (name === "bash") return assessCommand(input.command, cwd, dialect);
   if (name === "powershell") return ask("PowerShell 脚本需要人工确认");
   if (name === "write" || name === "edit") return assessPath("write", input.path ?? input.file_path, cwd);
   if (["read", "grep", "find", "ls"].includes(name)) return assessPath("read", input.path ?? cwd, cwd);

@@ -117,41 +117,47 @@ export class ReviewDialog {
     const height = Math.max(1, Math.min(22, this.rows()));
     const innerWidth = Math.max(1, width - 4);
     const content = wrapTextWithAnsi(this.body, innerWidth);
-    // Keep the title and choices visible even when the operation needs scrolling.
-    const compact = height < 12;
-    const overhead = compact ? 5 : 8;
-    this.pageSize = Math.max(1, height - overhead);
+    // Keep the title and choices visible even when scrolling is needed. Both layouts
+    // reserve their fixed rows, so the total is never taller than the terminal:
+    // compact = top border + title + 2 choices, full adds a separator and a bottom
+    // border. The final slice() is a hard guarantee even if that ever changes.
+    const compact = height < 9;
+    this.pageSize = Math.max(1, height - (compact ? 4 : 6));
     this.maxOffset = Math.max(0, content.length - this.pageSize);
     this.offset = Math.min(this.offset, this.maxOffset);
-    const border = (left: string, right: string) => this.theme.fg("warning",
+    // The panel is already identified by its fill and position, so the frame stays in
+    // the theme's neutral gray-white range: the gold `warning` role is left to actual
+    // warnings (the footer's context gauge). Only the active choice carries colour.
+    const border = (left: string, right: string) => this.theme.fg("muted",
       width > 1 ? left + "─".repeat(width - 2) + right : "─");
     const row = (text: string, selected = false) => {
       const textWidth = Math.max(0, width - 4);
       const padded = padLine(truncateToWidth(text, textWidth), textWidth);
       return width >= 4
-        ? this.theme.fg("warning", "│") + this.theme.bg(selected ? "selectedBg" : "userMessageBg", " " + padded + " ") + this.theme.fg("warning", "│")
+        ? this.theme.fg("muted", "│") + this.theme.bg(selected ? "selectedBg" : "userMessageBg", " " + padded + " ") + this.theme.fg("muted", "│")
         : truncateToWidth(text, width);
     };
+    // The row() padding leaves width - 4 usable columns. Shorten the choice labels
+    // before truncation would turn them into "1..." on a narrow terminal.
+    const labels = width - 4 >= 11 ? ["1. 允许本次操作", "2. 拒绝并停止"]
+      : ["1. 允许", "2. 拒绝"];
     const choice = (allow: boolean) => {
       const selected = this.allowSelected === allow;
       return row(this.theme.fg(selected ? "accent" : "text",
-        (selected ? "› " : "  ") + (allow ? "1. 允许本次操作" : "2. 拒绝并停止")), selected);
+        (selected ? "› " : "  ") + labels[allow ? 0 : 1]), selected);
     };
-    const position = (this.offset + 1) + "–" + Math.min(content.length, this.offset + this.pageSize) + "/" + content.length;
     const lines = height < 6 ? [
-      ...(height >= 3 ? [row(this.theme.fg("warning", this.title))] : []),
+      ...(height >= 3 ? [row(this.theme.fg("text", this.title))] : []),
       choice(true),
       choice(false),
-      ...(height >= 4 ? [row(this.theme.fg("muted", "Enter 确认 · Esc 拒绝"))] : []),
     ] : [
       border("╭", "╮"),
-      row(this.theme.fg("warning", this.theme.bold(this.title)) + (compact ? "" : this.theme.fg("muted", " · 等待确认，无超时"))),
+      row(this.theme.fg("text", this.theme.bold(this.title)) +
+        (this.title.includes("等待确认") ? "" : this.theme.fg("muted", " · 等待确认"))),
       ...content.slice(this.offset, this.offset + this.pageSize).map((text) => row(this.theme.fg("text", text))),
-      ...(compact ? [] : [row(this.theme.fg("muted", this.maxOffset > 0 ? "PgUp/PgDn 滚动 · " + position : "仅对本次操作有效"))]),
       ...(compact ? [] : [border("├", "┤")]),
       choice(true),
       choice(false),
-      row(this.theme.fg("muted", width >= 64 ? "↑↓ 选择 · Enter 确认 · a 允许 · Esc 拒绝" : "Enter 确认 · Esc 拒绝")),
       ...(compact ? [] : [border("╰", "╯")]),
     ];
     // Paint every cell, including trailing whitespace, so chat never bleeds through.
