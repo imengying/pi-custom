@@ -58,10 +58,9 @@ export class PermissionGate {
       const path = input.path ?? input.file_path;
       const target = ["write", "edit", "read"].includes(name) && typeof path === "string"
         ? "\n实际目标: " + canonicalPath(resolveToolPath(path, ctx.cwd)) : "";
-      const body = decision.reasons.join("\n") + "\n\n工作目录: " + ctx.cwd +
-        "\n工具: " + name + target + "\n\n完整操作:\n" + payload +
-        "\n\n授权仅针对本次操作，不会记住命令前缀。";
-      const accepted = await this.review(ctx, "需要用户授权", body, true, signal);
+      const body = "完整操作:\n" + payload + "\n\n原因: " + decision.reasons.join("\n") +
+        "\n工作目录: " + ctx.cwd + target;
+      const accepted = await this.review(ctx, "需要用户授权 · " + name, body, true, signal);
       return accepted && !signal.aborted && epoch === this.epoch;
     } catch {
       // UI errors and unsupported (e.g. headless) UI must never grant access.

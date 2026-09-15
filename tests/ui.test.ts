@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { AssistantMessageComponent, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
+import { compositeTuiLine, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { loadThemeFromPath, setThemeInstance } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { compactThinking, ReviewDialog, reviewText } from "../extensions/compact-workflow/ui.js";
+import { compactThinking, ReviewDialog, reviewText, showReview } from "../extensions/compact-workflow/ui.js";
 import { CommandOutputComponent, DiffComponent, diffCounts, shellRenderers } from "../extensions/compact-workflow/renderers.js";
 import { fileURLToPath } from "node:url";
 
@@ -99,26 +99,111 @@ describe("review dialog", () => {
     const dialog = new ReviewDialog("授权", body, theme, approval, () => 24, () => {}, (value) => decisions.push(value));
     return { dialog, decisions };
   };
-  for (const key of ["\r", "\x1b", "\x03"]) {
-    test("Enter, Escape and Ctrl+C reject: " + JSON.stringify(key), () => {
+  for (const key of ["\x1b", "\x03", "n", "2"]) {
+    test("explicit rejection: " + JSON.stringify(key), () => {
       const { dialog, decisions } = make();
       dialog.handleInput(key);
       expect(decisions).toEqual([false]);
     });
   }
-  for (const key of ["a", "\x1b[97u"]) {
+  for (const key of ["a", "\x1b[97u", "1", "\r", "\x1b[13u"]) {
     test("explicit approval key: " + JSON.stringify(key), () => {
       const { dialog, decisions } = make();
       dialog.handleInput(key);
       expect(decisions).toEqual([true]);
     });
   }
+  test("Enter confirms the visible selection", () => {
+    const { dialog, decisions } = make();
+    expect(plain(dialog.render(80))).toContain("› 1. 允许本次操作");
+    dialog.handleInput("\x1b[B");
+    expect(plain(dialog.render(80))).toContain("› 2. 拒绝并停止");
+    expect(decisions).toEqual([]);
+    dialog.handleInput("\r");
+    expect(decisions).toEqual([false]);
+  });
+  test("selection can move back to allow without granting access until confirmed", () => {
+    const { dialog, decisions } = make();
+    dialog.handleInput("\t");
+    dialog.handleInput("\x1b[A");
+    expect(decisions).toEqual([]);
+    expect(plain(dialog.render(80))).toContain("› 1. 允许本次操作");
+    dialog.handleInput("\r");
+    expect(decisions).toEqual([true]);
+  });
+  test("Enter closes a read-only review without approval", () => {
+    const { dialog, decisions } = make(false);
+    dialog.handleInput("\r");
+    expect(decisions).toEqual([false]);
+  });
   test("paste and unrelated keys cannot approve", () => {
     const { dialog, decisions } = make();
     dialog.handleInput("a\n");
     dialog.handleInput("\x1b[200~a\x1b[201~");
+    dialog.handleInput("\x1b[200~\r\x1b[201~");
+    dialog.handleInput("\x1b[13;1:2u");
+    dialog.handleInput("\x1b[97;1:3u");
     expect(decisions).toEqual([]);
     dialog.dispose();
+  });
+  for (const width of [24, 40, 100]) {
+    test("opaque panel preserves both choices after scrolling and resizing at width " + width, () => {
+      let rows = 24;
+      const dialog = new ReviewDialog("需要用户授权", "中文🙂\n".repeat(90) + "LAST", theme, true, () => rows, () => {}, () => {});
+      for (const height of [24, 10, 6, 3, 18]) {
+        rows = height;
+        dialog.render(width);
+        dialog.handleInput("\x1b[F");
+        const rendered = dialog.render(width);
+        expect(rendered.length).toBeLessThanOrEqual(height);
+        expect(rendered.every((line) => visibleWidth(line) === width)).toBe(true);
+        expect(rendered.every((line) => line.startsWith(theme.getBgAnsi("userMessageBg")))).toBe(true);
+        expect(plain(rendered)).toContain("1. 允许本次操作");
+        expect(plain(rendered)).toContain("2. 拒绝并停止");
+        if (height >= 6) expect(plain(rendered)).toContain("LAST");
+        for (const line of rendered) {
+          const composed = compositeTuiLine("BACKGROUND".repeat(width), line, 0, width, width);
+          expect(stripTerminalSequences(composed)).not.toContain("BACKGROUND");
+        }
+      }
+      dialog.dispose();
+    });
+  }
+  test("bottom approval remains pending after an hour and restores working status", async () => {
+    jest.useFakeTimers();
+    let dialog!: ReviewDialog;
+    const statuses: Array<string | undefined> = [];
+    const ctx: any = { hasUI: true, ui: {
+      setWorkingMessage: (message?: string) => statuses.push(message),
+      custom: (factory: any, options: any) => new Promise((resolve) => {
+        expect(options).toEqual({ overlay: true, overlayOptions: { width: "100%", anchor: "bottom-center" } });
+        dialog = factory({ terminal: { rows: 24 }, requestRender: () => {} }, theme, {}, resolve);
+      }),
+    } };
+    try {
+      let settled = false;
+      const result = showReview(ctx, "需要用户授权", "echo test", true).then((value) => { settled = true; return value; });
+      jest.advanceTimersByTime(60 * 60 * 1000);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(plain(dialog.render(100))).toContain("等待确认，无超时");
+      expect(statuses).toEqual(["等待用户授权"]);
+      dialog.handleInput("\r");
+      expect(await result).toBe(true);
+      expect(statuses).toEqual(["等待用户授权", undefined]);
+    } finally {
+      dialog?.dispose();
+      jest.useRealTimers();
+    }
+  });
+  test("UI failure restores working status and propagates to the permission gate", async () => {
+    const statuses: Array<string | undefined> = [];
+    const ctx: any = { hasUI: true, ui: {
+      setWorkingMessage: (message?: string) => statuses.push(message),
+      custom: async () => { throw new Error("UI failed"); },
+    } };
+    await expect(showReview(ctx, "授权", "operation", true)).rejects.toThrow("UI failed");
+    expect(statuses).toEqual(["等待用户授权", undefined]);
   });
   test("all command lines can be reviewed by scrolling", () => {
     const { dialog } = make();

@@ -1,5 +1,5 @@
 import type { ExtensionContext, MarkdownTransformContext, Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { isKeyRelease, isKeyRepeat, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export const THINKING_PREVIEW_LINES = 2;
 export const COMMAND_PREVIEW_LINES = 5;
@@ -40,6 +40,7 @@ export class ReviewDialog {
   private maxOffset = 0;
   private pageSize = 1;
   private finished = false;
+  private allowSelected = true;
   private abortListener: (() => void) | undefined;
 
   constructor(
@@ -52,6 +53,7 @@ export class ReviewDialog {
     private done: (approved: boolean) => void,
     private signal?: AbortSignal,
   ) {
+    this.title = reviewText(title);
     this.body = reviewText(body);
     this.abortListener = () => this.finish(false);
     if (signal?.aborted) this.finish(false);
@@ -66,12 +68,21 @@ export class ReviewDialog {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "enter") || data === "q") {
+    if (this.finished || data.includes("\x1b[200~") || isKeyRelease(data) || isKeyRepeat(data)) return;
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
       this.finish(false);
       return;
     }
-    // Enter never grants permission. Approval requires an explicit single key.
-    if (this.approval && matchesKey(data, "a")) { this.finish(true); return; }
+    if (matchesKey(data, "enter")) { this.finish(this.approval && this.allowSelected); return; }
+    if (this.approval) {
+      if (matchesKey(data, "a") || matchesKey(data, "1")) { this.finish(true); return; }
+      if (matchesKey(data, "n") || matchesKey(data, "2")) { this.finish(false); return; }
+      if (matchesKey(data, "up") || matchesKey(data, "down") || matchesKey(data, "tab")) {
+        this.allowSelected = !this.allowSelected;
+        this.redraw();
+        return;
+      }
+    }
     if (matchesKey(data, "up") || data === "k") this.offset--;
     else if (matchesKey(data, "down") || data === "j") this.offset++;
     else if (matchesKey(data, "pageUp")) this.offset -= this.pageSize;
@@ -84,6 +95,7 @@ export class ReviewDialog {
 
   render(width: number): string[] {
     if (width <= 0) return [];
+    if (this.approval) return this.renderApproval(width);
     const innerWidth = Math.max(1, width - 2);
     const content = wrapTextWithAnsi(this.body, innerWidth);
     this.pageSize = Math.max(1, Math.min(18, this.rows() - 5));
@@ -91,15 +103,59 @@ export class ReviewDialog {
     this.offset = Math.min(this.offset, this.maxOffset);
     const body = content.slice(this.offset, this.offset + this.pageSize);
     const line = (text: string) => truncateToWidth(text, width);
-    const controls = this.approval ? "a 仅本次允许 · Enter/Esc 拒绝" : "Enter/Esc 关闭";
     return [
-      line(this.theme.fg(this.approval ? "warning" : "accent", this.theme.bold(this.title))),
+      line(this.theme.fg("accent", this.theme.bold(this.title))),
       line(this.theme.fg("borderMuted", "─".repeat(width))),
       ...body.map((text) => line(" " + this.theme.fg("text", text))),
       line(this.theme.fg("muted", "↑↓ / PgUp PgDn 滚动 · " + (this.offset + 1) + "–" +
         Math.min(content.length, this.offset + this.pageSize) + " / " + content.length)),
-      line(this.theme.fg(this.approval ? "warning" : "muted", controls)),
+      line(this.theme.fg("muted", "Enter/Esc 关闭")),
     ];
+  }
+
+  private renderApproval(width: number): string[] {
+    const height = Math.max(1, Math.min(22, this.rows()));
+    const innerWidth = Math.max(1, width - 4);
+    const content = wrapTextWithAnsi(this.body, innerWidth);
+    // Keep the title and choices visible even when the operation needs scrolling.
+    const compact = height < 12;
+    const overhead = compact ? 5 : 8;
+    this.pageSize = Math.max(1, height - overhead);
+    this.maxOffset = Math.max(0, content.length - this.pageSize);
+    this.offset = Math.min(this.offset, this.maxOffset);
+    const border = (left: string, right: string) => this.theme.fg("warning",
+      width > 1 ? left + "─".repeat(width - 2) + right : "─");
+    const row = (text: string, selected = false) => {
+      const textWidth = Math.max(0, width - 4);
+      const padded = padLine(truncateToWidth(text, textWidth), textWidth);
+      return width >= 4
+        ? this.theme.fg("warning", "│") + this.theme.bg(selected ? "selectedBg" : "userMessageBg", " " + padded + " ") + this.theme.fg("warning", "│")
+        : truncateToWidth(text, width);
+    };
+    const choice = (allow: boolean) => {
+      const selected = this.allowSelected === allow;
+      return row(this.theme.fg(selected ? "accent" : "text",
+        (selected ? "› " : "  ") + (allow ? "1. 允许本次操作" : "2. 拒绝并停止")), selected);
+    };
+    const position = (this.offset + 1) + "–" + Math.min(content.length, this.offset + this.pageSize) + "/" + content.length;
+    const lines = height < 6 ? [
+      ...(height >= 3 ? [row(this.theme.fg("warning", this.title))] : []),
+      choice(true),
+      choice(false),
+      ...(height >= 4 ? [row(this.theme.fg("muted", "Enter 确认 · Esc 拒绝"))] : []),
+    ] : [
+      border("╭", "╮"),
+      row(this.theme.fg("warning", this.theme.bold(this.title)) + (compact ? "" : this.theme.fg("muted", " · 等待确认，无超时"))),
+      ...content.slice(this.offset, this.offset + this.pageSize).map((text) => row(this.theme.fg("text", text))),
+      ...(compact ? [] : [row(this.theme.fg("muted", this.maxOffset > 0 ? "PgUp/PgDn 滚动 · " + position : "仅对本次操作有效"))]),
+      ...(compact ? [] : [border("├", "┤")]),
+      choice(true),
+      choice(false),
+      row(this.theme.fg("muted", width >= 64 ? "↑↓ 选择 · Enter 确认 · a 允许 · Esc 拒绝" : "Enter 确认 · Esc 拒绝")),
+      ...(compact ? [] : [border("╰", "╯")]),
+    ];
+    // Paint every cell, including trailing whitespace, so chat never bleeds through.
+    return lines.slice(0, height).map((line) => this.theme.bg("userMessageBg", padLine(truncateToWidth(line, width), width)));
   }
 
   invalidate(): void {}
@@ -117,11 +173,18 @@ export async function showReview(
   signal?: AbortSignal,
 ): Promise<boolean> {
   if (!ctx.hasUI || signal?.aborted) return false;
-  const result = await ctx.ui.custom<boolean>((tui, theme, _keys, done) =>
-    new ReviewDialog(title, body, theme, approval, () => tui.terminal.rows,
-      () => tui.requestRender(), done, signal),
-  { overlay: true, overlayOptions: { width: "90%", anchor: "center" } });
-  return result === true && !signal?.aborted;
+  if (approval) ctx.ui.setWorkingMessage("等待用户授权");
+  try {
+    const result = await ctx.ui.custom<boolean>((tui, theme, _keys, done) =>
+      new ReviewDialog(title, body, theme, approval, () => tui.terminal.rows,
+        () => tui.requestRender(), done, signal),
+    { overlay: true, overlayOptions: approval
+      ? { width: "100%", anchor: "bottom-center" }
+      : { width: "90%", anchor: "center" } });
+    return result === true && !signal?.aborted;
+  } finally {
+    if (approval) ctx.ui.setWorkingMessage();
+  }
 }
 
 export function padLine(line: string, width: number): string {
