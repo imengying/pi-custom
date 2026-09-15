@@ -1,10 +1,8 @@
 import { expect, test } from "bun:test";
 import { fileURLToPath } from "node:url";
-import { stripTerminalSequences, Spacer, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { loadThemeFromPath } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { installCompactFooter } from "../extensions/compact-workflow/compact-footer.js";
-
-const dim = (text: string) => "\x1b[38;2;102;102;102m" + text + "\x1b[39m";
 
 const theme = loadThemeFromPath(fileURLToPath(new URL(
   "../themes/codex-dark.json", import.meta.url,
@@ -25,9 +23,6 @@ function fixture() {
   let branchChanged = () => {};
   let renders = 0;
   let disposed = false;
-  // Stands in for the TUI root: the footer render pass walks it to drop pi's
-  // startup "Session compacted" notice, which pi adds after session_start.
-  const tuiChildren: any[] = [];
   const statuses = new Map<string, string>();
   const context: any = { tokens: 17300, contextWindow: 1_000_000, percent: 1.73 };
   const ctx: any = {
@@ -42,7 +37,7 @@ function fixture() {
     ui: {
       theme,
       setFooter: (factory: any) => {
-        footer = factory({ requestRender: () => { renders++; }, children: tuiChildren }, theme, {
+        footer = factory({ requestRender: () => { renders++; } }, theme, {
           getGitBranch: () => branch,
           getExtensionStatuses: () => statuses,
           getAvailableProviderCount: () => 3,
@@ -56,7 +51,7 @@ function fixture() {
   };
   installCompactFooter(ctx);
   return {
-    footer, ctx, entries, context, statuses, tuiChildren,
+    footer, ctx, entries, context, statuses,
     plain: (width = 120): string[] => footer.render(width).map(stripTerminalSequences),
     changeBranch: (next: string) => { branch = next; branchChanged(); },
     renderCount: () => renders,
@@ -116,20 +111,4 @@ test("branch changes redraw and the watcher is released when the footer is dispo
   expect(current.plain()[0]).toContain("(feature)");
   current.footer.dispose();
   expect(current.isDisposed()).toBe(true);
-});
-
-test("rendering the footer drops pi's startup compaction notice", () => {
-  // pi appends this notice to the chat container after session_start, so the footer
-  // pass is the first hook that can see it. Without this the line reappears on every
-  // resume even though the compaction summary already conveys the same information.
-  const current = fixture();
-  current.tuiChildren.push(new Spacer(1), new Text(dim("Session compacted 2 times"), 1, 0));
-  const before = current.renderCount();
-  current.plain();
-  expect(current.tuiChildren).toHaveLength(0);
-  // One extra frame is requested so the transcript redraws without the line.
-  expect(current.renderCount()).toBe(before + 1);
-  // A second pass finds nothing and must not request yet another frame.
-  current.plain();
-  expect(current.renderCount()).toBe(before + 1);
 });

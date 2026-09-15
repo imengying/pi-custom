@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { isAbsolute, relative, sep } from "node:path";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { stripCompactionNotices } from "./transcript.js";
 
 // Nerd Fonts: Material Design database-outline, matching the cache indicator.
 const CACHE_ICON = "\u{f1632}";
@@ -58,11 +57,6 @@ export function installCompactFooter(ctx: ExtensionContext): void {
       invalidate() {},
       render(width: number): string[] {
         if (width <= 0) return [];
-        // The footer renders last in every frame, which is also when pi's startup
-        // "Session compacted" notice can first exist. Sweep it before drawing, then
-        // ask for one more frame so the transcript redraws without it: the chat part
-        // of this frame has already been rendered by the time the footer runs.
-        if (stripCompactionNotices(tui)) tui.requestRender();
         // Reload applies the selected theme after session_start; read it live.
         const theme = ctx.ui.theme;
         const { input, output, cacheHitRate } = sessionUsage(ctx.sessionManager.getEntries());

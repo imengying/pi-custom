@@ -8,7 +8,6 @@
 - **命令输出**：默认显示末尾 5 行，多行命令本身也缩成一行标题。`Ctrl+O` 展开或收起，新一轮任务自动收起。手动 `!` / `!!` 命令沿用 pi 原生预览（最多 20 行），同样经过授权检查。
 - **文件修改**：红底删除、绿底新增，带行号和增删统计，默认预览 14 行；大段替换会同时展示新旧内容。新建文件算新增，覆盖文件显示实际差异；过大的写入跳过差异计算以免卡顿。
 - **底栏**：`↑ 175k   ↓ 174k   󱘲 99.5%   17.3k/1.0M`，依次是累计输入、累计输出、最近一次请求的缓存命中率、当前上下文 token 数与容量。缓存图标是 Nerd Fonts 的数据库轮廓（U+F1632）。上下文超过容量 70% / 90% 时显示警告色 / 错误色，压缩后暂不可知时显示 `?`。目录、Git 分支、会话名和思考等级照常显示。
-- **压缩提示**：不显示 pi 启动时的 `Session compacted N times` 一行；压缩摘要本身仍然照常显示。
 - **斜杠菜单**：隐藏了 `scoped-models`、`import`、`export`、`share`、`copy`、`hotkeys`、`fork`、`clone`、`trust`、`llama`、`login`、`logout`、`changelog`、`thoughts`、`tree`，其余说明已汉化。直接输入原命令仍然可用。
 
 ## 授权
@@ -82,4 +81,4 @@ bun run typecheck
 bun test
 ```
 
-开发环境为 bun 1.4.0、TypeScript 7.0.2、Node 类型 24。代码入口是 `extensions/compact-workflow/index.ts`，只使用 pi 的公开扩展 API。`policy.ts` 负责权限分类，`guard.ts` 负责逐次授权，`ui.ts` 与 `renderers.ts` 负责预览、查看窗口和红绿差异，`compact-footer.ts` 负责底栏，`transcript.ts` 负责去掉 pi 的压缩提示行（唯一一处触碰 pi 内部组件树的地方，失败时只退化为提示行照常显示）。测试依赖仅位于本项目的 `node_modules`，扩展运行时复用 pi 提供的模块。
+开发环境为 bun 1.4.0、TypeScript 7.0.2、Node 类型 24。代码入口是 `extensions/compact-workflow/index.ts`，只使用 pi 的公开扩展 API。`policy.ts` 负责权限分类，`guard.ts` 负责逐次授权，`ui.ts` 与 `renderers.ts` 负责预览、查看窗口和红绿差异，`compact-footer.ts` 负责底栏。测试依赖仅位于本项目的 `node_modules`，扩展运行时复用 pi 提供的模块。
