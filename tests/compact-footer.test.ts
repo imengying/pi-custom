@@ -3,7 +3,6 @@ import { fileURLToPath } from "node:url";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { loadThemeFromPath } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { installCompactFooter } from "../extensions/compact-workflow/compact-footer.js";
-
 const theme = loadThemeFromPath(fileURLToPath(new URL(
   "../themes/codex-dark.json", import.meta.url,
 )), "truecolor");
@@ -62,20 +61,20 @@ function fixture() {
 test("footer totals include tools and summaries, with the latest prompt cache hit rate", () => {
   const { plain } = fixture();
   const lines = plain();
-  expect(lines[1]).toMatch(/^↑ 175k {3}↓ 174k {3}\u{f1632} 99\.5% {3}17\.3k\/1\.0M\s+deepseek-v4\.1-flash • high$/u);
+  expect(lines[1]).toMatch(/^↑ 175k {3}↓ 174k {3}\u{f1632} 99\.5% {3}17\.3k\/1M\s+deepseek-v4\.1-flash • high$/u);
   expect(lines.join("\n")).not.toMatch(/\||\(work\)|CH|R17M|\(auto\)|授权检查已启用/);
 });
 
 test("context uses actual tokens and stays unknown after compaction", () => {
   const { plain, context, footer } = fixture();
   Object.assign(context, { tokens: 173000, percent: 17.3 });
-  expect(plain()[1]).toContain("173k/1.0M");
+  expect(plain()[1]).toContain("173k/1M");
   Object.assign(context, { tokens: null, percent: null });
-  expect(plain()[1]).toContain("?/1.0M");
+  expect(plain()[1]).toContain("?/1M");
   expect(plain()[1]).not.toContain("173k");
   for (const [tokens, percent, color] of [[750000, 75, "warning"], [950000, 95, "error"]] as const) {
     Object.assign(context, { tokens, percent });
-    expect(footer.render(120)[1]).toContain(theme.fg(color, `${tokens / 1000}k/1.0M`));
+    expect(footer.render(120)[1]).toContain(theme.fg(color, `${tokens / 1000}k/1M`));
   }
 });
 
@@ -90,6 +89,68 @@ test("new usage and model changes refresh without carrying stale cache statistic
   entries.push({ type: "message", message: { role: "assistant", usage: usage(0, 0) } });
   expect(plain()[1]).toContain("\u{f1632} —");
   expect(plain()[1]).not.toContain("NaN");
+});
+
+test("each status field carries the accent codex assigns to it", () => {
+  // codex's style guide colours status items by kind rather than painting the
+  // whole row one grey: model cyan, path green, branch magenta, usage green.
+  const { footer } = fixture();
+  const lines = footer.render(120);
+  expect(lines[0]).toContain(theme.fg("success", "/tmp/中文目录"));
+  expect(lines[0]).toContain(theme.fg("branch", "main"));
+  expect(lines[0]).toContain(theme.fg("muted", "会话示例"));
+  expect(lines[1]).toContain(theme.fg("success", "↑ 175k"));
+  expect(lines[1]).toContain(theme.fg("success", "↓ 174k"));
+  expect(lines[1]).toContain(theme.fg("success", "\u{f1632} 99.5%"));
+  expect(lines[1]).toContain(theme.fg("accent", "deepseek-v4.1-flash • high"));
+  // Colouring must not change layout: the plain text still starts with the four
+  // usage fields and ends with the model, at exactly the full width. (The cache
+  // glyph is double-width, so pad by display width, not string length.)
+  const plain = stripTerminalSequences(lines[1]);
+  const usageText = "↑ 175k   ↓ 174k   \u{f1632} 99.5%   17.3k/1M";
+  expect(plain.startsWith(usageText)).toBe(true);
+  expect(plain.endsWith("deepseek-v4.1-flash • high")).toBe(true);
+  expect(visibleWidth(lines[1])).toBe(120);
+});
+
+test("a theme without the optional magenta roles still renders", () => {
+  const { footer, ctx } = fixture();
+  // Older copies of codex-dark.json predate the magenta accents; `withRole` must
+  // fall back instead of letting Theme.fg throw on an unknown role.
+  const legacy: any = {
+    bold: (text: string) => text,
+    fg: (role: string, text: string) => {
+      if (role === "branch" || role === "bashPrompt") throw new Error(`Unknown theme color: ${role}`);
+      return `[${role}]${text}`;
+    },
+  };
+  ctx.ui.theme = legacy;
+  const lines = footer.render(120);
+  expect(lines[0]).toContain("[dim]main");
+  expect(lines[1]).toContain("[accent]deepseek-v4.1-flash • high");
+});
+
+test("a whole token figure drops the decimal, a fractional one keeps it", () => {
+  // `256.0k` / `1.0M` read as noise; the decimal only appears when it says something.
+  const { ctx, context, plain } = fixture();
+  // `tokens: null` is the post-compaction unknown state, which is the `?` case.
+  Object.assign(context, { tokens: null, percent: null });
+  for (const [window, expected] of [[256_000, "256k"], [200_000, "200k"], [1_000_000, "1M"], [2_000_000, "2M"]] as const) {
+    context.contextWindow = window;
+    ctx.model.contextWindow = window;
+    expect(plain()[1]).toContain(`?/${expected}`);
+    expect(plain()[1]).not.toContain(".0k");
+    expect(plain()[1]).not.toContain(".0M");
+  }
+  // A genuine fraction must survive rounding down to one decimal.
+  context.contextWindow = 1_048_576;
+  Object.assign(context, { tokens: null, percent: null });
+  expect(plain()[1]).toContain("?/1M");
+  context.contextWindow = 250_000;
+  Object.assign(context, { tokens: 256_000 });
+  expect(plain()[1]).toContain("256k/250k");
+  Object.assign(context, { tokens: 256_500 });
+  expect(plain()[1]).toContain("256.5k/250k");
 });
 
 test("Chinese paths, database glyph, and extension status fit narrow terminals", () => {

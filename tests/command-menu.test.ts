@@ -11,6 +11,7 @@ import { createChineseCommandMenu } from "../extensions/compact-workflow/command
 const hidden = [
   "scoped-models", "import", "export", "share", "copy", "hotkeys", "fork",
   "clone", "trust", "llama", "login", "logout", "changelog", "thoughts", "tree",
+  "permissions",
 ];
 const options = () => ({ signal: new AbortController().signal });
 const commands: SlashCommand[] = [
@@ -30,7 +31,7 @@ describe("Chinese slash-command menu", () => {
     for (const name of hidden) expect(names).not.toContain(name);
     expect(names).toEqual([
       "settings", "model", "thinking", "name", "session", "new",
-      "compact", "resume", "reload", "quit", "permissions",
+      "compact", "resume", "reload", "quit",
     ]);
     for (const item of result!.items) {
       expect(item.description).toMatch(/[\u4e00-\u9fff]/);
@@ -47,10 +48,14 @@ describe("Chinese slash-command menu", () => {
     });
   }
 
-  test("English argument hints in command descriptions are translated too", async () => {
+  test("argument placeholders are dropped from command descriptions", async () => {
     const result = await createChineseCommandMenu(native()).getSuggestions(["/"], 0, 1, options());
-    expect(result!.items.find((item) => item.value === "model")!.description).toBe("<提供方/模型> — 选择模型");
-    expect(result!.items.find((item) => item.value === "thinking")!.description).toBe("<级别> — 设置思考强度");
+    expect(result!.items.find((item) => item.value === "model")!.description).toBe("选择模型");
+    expect(result!.items.find((item) => item.value === "thinking")!.description).toBe("设置思考强度");
+    for (const item of result!.items) {
+      expect(item.description).not.toContain("<");
+      expect(item.description).not.toContain("—");
+    }
   });
 
   test("native command completion still inserts the original command name", async () => {

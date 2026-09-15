@@ -3,7 +3,7 @@ import { AssistantMessageComponent, getMarkdownTheme } from "@earendil-works/pi-
 import { compositeTuiLine, visibleWidth, stripTerminalSequences } from "@earendil-works/pi-tui";
 import { loadThemeFromPath, setThemeInstance } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { compactThinking, ReviewDialog, reviewText, showReview } from "../extensions/compact-workflow/ui.js";
-import { CommandOutputComponent, DiffComponent, diffCounts, recordExecutionTime, shellRenderers } from "../extensions/compact-workflow/renderers.js";
+import { CommandOutputComponent, DiffComponent, diffCounts, editRenderers, recordExecutionTime, shellRenderers } from "../extensions/compact-workflow/renderers.js";
 import { fileURLToPath } from "node:url";
 
 const theme = loadThemeFromPath(fileURLToPath(new URL(
@@ -87,9 +87,91 @@ describe("command and diff rendering", () => {
     expect(plain(rendered)).not.toContain("print");
     expect(plain(rendered)).toContain("4 行命令");
   });
+  test("file paths use the accent role, not the plain text role", () => {
+    const rendered = editRenderers.renderCall!(
+      { path: "/tmp/中文/x.ts" }, theme,
+      { state: {}, expanded: false, isPartial: false, isError: false } as any,
+    ).render(80)[0];
+    expect(rendered).toContain(theme.fg("accent", "/tmp/中文/x.ts"));
+    expect(rendered).toContain(theme.fg("toolTitle", "修改"));
+    expect(stripTerminalSequences(rendered)).toBe("✓ 修改 /tmp/中文/x.ts");
+  });
+
   test("diff headers are not counted as changed lines", () => {
     expect(diffCounts("--- a/file\n+++ b/file\n-old\n+new")).toEqual({ added: 1, removed: 1 });
   });
+  test("the command is syntax highlighted after a magenta prompt", () => {
+    // codex prints `$ ` in magenta and colours the command body, rather than
+    // emitting the whole line in one colour.
+    const rendered = shellRenderers.renderCall!(
+      { command: 'git commit -m "fix" && echo done' }, theme,
+      { state: {}, expanded: false, isPartial: false, isError: false } as any,
+    ).render(80)[0];
+    expect(rendered).toContain(theme.fg("bashPrompt", "$ "));
+    expect(rendered).not.toContain(theme.fg("toolTitle", "$ "));
+    // The syntax roles come from the theme's syntax palette.
+    expect(rendered).toContain(theme.fg("syntaxString", '"fix"'));
+    expect(rendered).toContain(theme.fg("syntaxType", "echo"));
+    // Highlighting is display-only: stripping escapes restores the exact input.
+    expect(stripTerminalSequences(rendered)).toBe('✓ $ git commit -m "fix" && echo done');
+  });
+
+  test("a collapsed multi-line command closes every colour it opens", () => {
+    // An unterminated quote or here-doc opener leaves the highlighter's colour
+    // open at the end of the line. The line note this extension appends must
+    // stay `muted` and the line must reset, or the colour bleeds into the
+    // surrounding transcript.
+    for (const command of [
+      'git commit -m "unclosed\nline2\nline3',
+      "python3 - <<'PY'\nprint(1)\nPY",
+      "case $x in\na) echo a;;\nesac",
+    ]) {
+      const [line] = shellRenderers.renderCall!(
+        { command }, theme, { state: {}, expanded: false, isPartial: false, isError: false } as any,
+      ).render(48);
+      expect(line).toContain(theme.fg("muted", " …（3 行命令）"));
+      expect(line.endsWith("\u001b[39m")).toBe(true);
+      expect(line).not.toMatch(/\u001b\[38;2;167;196;159m …/u);
+      expect(visibleWidth(line)).toBeLessThanOrEqual(48);
+      expect(stripTerminalSequences(line)).toMatch(/…（3 行命令）$/u);
+    }
+  });
+
+  test("highlighting never changes the command text", () => {
+    for (const command of [
+      'grep -E "^(a|b)+$" file | sed \'s/x/y/\'',
+      'awk \'{print $1}\' < in.txt > out.txt',
+      'git commit -m "中文 提交" && rm -rf "带 空格 的目录"',
+      "cat <<EOF\nline1\nline2\nEOF",
+    ]) {
+      for (const width of [24, 40, 80, 200]) {
+        const rendered = shellRenderers.renderCall!(
+          { command }, theme, { state: {}, expanded: true, isPartial: false, isError: false } as any,
+        ).render(width);
+        // Narrow widths rewarp the line (a break point consumes its space), so
+        // compare with whitespace collapsed: no character may be lost or added.
+        expect(stripTerminalSequences(rendered.join("\n")).replace(/\s+/g, " "))
+          .toBe(("✓ $ " + command).replace(/\s+/g, " "));
+        expect(rendered.every((line) => visibleWidth(line) <= width)).toBe(true);
+      }
+      // Wide enough to fit as-is: the text must be reproduced exactly.
+      const wide = shellRenderers.renderCall!(
+        { command }, theme, { state: {}, expanded: true, isPartial: false, isError: false } as any,
+      ).render(200);
+      expect(stripTerminalSequences(wide.join("\n"))).toBe("✓ $ " + command);
+    }
+  });
+
+  test("status marks keep the green/red roles and are bold in the source text", () => {
+    const render = (isPartial: boolean, isError: boolean) => shellRenderers.renderCall!(
+      { command: "true" }, theme, { state: {}, expanded: false, isPartial, isError } as any,
+    ).render(40)[0];
+    expect(render(false, false)).toContain(theme.fg("success", theme.bold("✓")));
+    expect(render(false, true)).toContain(theme.fg("error", theme.bold("×")));
+    // Still running: no success or failure is claimed yet.
+    expect(render(true, false)).toContain(theme.fg("muted", "●"));
+  });
+
   test("elapsed time measures the command, not the time spent waiting for approval", () => {
     // pi announces a tool call before it asks for approval, so a renderer that timed
     // itself from its own first render would report the user's thinking time as the

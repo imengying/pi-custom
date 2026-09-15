@@ -1,6 +1,7 @@
 import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { keyHint } from "@earendil-works/pi-coding-agent";
+import { highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { withRole } from "./colors.js";
 import { COMMAND_PREVIEW_LINES, DIFF_PREVIEW_LINES, displayText, padLine } from "./ui.js";
 
 type Renderers = Required<Pick<ToolDefinition<any, any, any>, "renderCall" | "renderResult">>;
@@ -29,6 +30,37 @@ export function recordExecutionTime(toolCallId: string, durationMs: number): voi
     if (oldest === undefined) break;
     executionTimes.delete(oldest);
   }
+}
+
+/**
+ * Syntax-highlight a shell command for display, one entry per source line.
+ *
+ * codex colours the command body rather than printing it flat. The input is
+ * already sanitised by `displayText`, so the only escape sequences added here
+ * come from pi's own highlighter. A line may end mid-token (an unterminated
+ * quote, a here-doc opener), and the highlighter then leaves its colour open;
+ * every line is closed again so the following text cannot inherit it. An
+ * unrecognised command highlights as plain text, and `stripTerminalSequences`
+ * always round-trips to the original characters.
+ */
+function highlightShellLines(text: string): string[] {
+  let lines: string[];
+  try {
+    lines = highlightCode(text, "bash");
+  } catch {
+    lines = text.split("\n");
+  }
+  return lines.map((line) => (line.includes("\u001b[") && !line.endsWith("\u001b[39m") ? line + "\u001b[39m" : line));
+}
+
+function highlightShell(text: string): string {
+  return highlightShellLines(text).join("\n");
+}
+
+/** Status marks are `bold` in codex, on top of their green/red role. */
+function statusMark(theme: Theme, isPartial: boolean, isError: boolean): string {
+  if (isPartial) return theme.fg("muted", "●");
+  return theme.fg(isError ? "error" : "success", theme.bold(isError ? "×" : "✓"));
 }
 
 function resultText(result: { content?: Array<{ type: string; text?: string }> }): string {
@@ -125,13 +157,17 @@ export const shellRenderers: Renderers = {
       invalidate() {},
       render(width: number) {
         if (width <= 0) return [];
-        const mark = context.isPartial ? theme.fg("muted", "●") :
-          theme.fg(context.isError ? "error" : "success", context.isError ? "×" : "✓");
-        const heading = mark + " " + theme.fg("toolTitle", "$ ");
-        if (context.expanded) return wrapTextWithAnsi(heading + theme.fg("toolTitle", raw), width);
+        const mark = statusMark(theme, context.isPartial, context.isError);
+        // codex renders the `$ ` prompt in magenta and the command body highlighted.
+        const heading = mark + " " + withRole(theme, "bashPrompt", "toolTitle", "$ ");
+        if (context.expanded) return wrapTextWithAnsi(heading + highlightShell(raw), width);
         const lines = raw.split("\n");
-        const command = lines[0] + (lines.length > 1 ? " …（" + lines.length + " 行命令）" : "");
-        return [truncateToWidth(heading + theme.fg("toolTitle", command), width)];
+        // Only the first line is shown collapsed; the line count is this
+        // extension's own note, so it stays muted instead of taking the
+        // colour of whatever token the first line happened to end on.
+        const command = highlightShellLines(lines[0])[0] ?? "";
+        const note = lines.length > 1 ? theme.fg("muted", ` …（${lines.length} 行命令）`) : "";
+        return [truncateToWidth(heading + command + note, width)];
       },
     };
   },
@@ -160,9 +196,8 @@ function fileHeader(verb: string): NonNullable<Renderers["renderCall"]> {
       if (width <= 0) return [];
       const input = args as Record<string, unknown>;
       const rawPath = displayText(String(input.path ?? input.file_path ?? "…"));
-      const mark = context.isPartial ? theme.fg("muted", "●") :
-        theme.fg(context.isError ? "error" : "success", context.isError ? "×" : "✓");
-      return [truncateToWidth(mark + " " + theme.fg("toolTitle", verb) + " " + theme.fg("text", rawPath), width)];
+      const mark = statusMark(theme, context.isPartial, context.isError);
+      return [truncateToWidth(mark + " " + theme.fg("toolTitle", verb) + " " + theme.fg("accent", rawPath), width)];
     },
   });
 }

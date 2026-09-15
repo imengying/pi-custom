@@ -13,6 +13,7 @@
     "output": "#b8b8b8",
     "cyan": "#73c2cf",
     "blue": "#8ab4e0",
+    "magenta": "#c586c0",
     "green": "#8ccf7e",
     "red": "#f08a83",
     "yellow": "#d6bb7a",
@@ -76,7 +77,9 @@
     "thinkingHigh": "border",
     "thinkingXhigh": "dim",
     "thinkingMax": "muted",
-    "bashMode": "cyan"
+    "bashMode": "cyan",
+    "bashPrompt": "magenta",
+    "branch": "magenta"
   },
   "export": {
     "pageBg": "bg",
