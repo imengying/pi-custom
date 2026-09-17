@@ -230,3 +230,59 @@ describe("zsh dialect", () => {
     }
   });
 });
+
+describe("credential locations added after the first release", () => {
+  // `~/.pi` and `~/.codex` hold the provider keys this gate exists to protect: once a
+  // read is auto-approved, no later review sees the secret. The earlier rule list only
+  // knew about editor-independent credentials and let all of these through.
+  for (const command of [
+    "cat ~/.pi/agent/auth.json", "cat ~/.pi/agent/models.json",
+    "cat ~/.codex/auth.json", "cat ~/.claude.json", "cat ~/.gemini/settings.json",
+    "grep -r KEY ~/.pi", "ls ~/.pi/agent", "cat ~/.aider.conf.yml",
+    "cat ~/.local/share/keyrings/login.keyring",
+  ]) {
+    test("agent credential read blocked: " + command, () => {
+      const decision = assessCommand(command, cwd);
+      expect(decision.approval).toBe(true);
+      expect(decision.safeCommand).toBeUndefined();
+    });
+  }
+  test("home-only names stay ordinary files inside a checkout", () => {
+    // A repository may legitimately ship a fixture called `auth.json`, so the rule is
+    // scoped to the home directory instead of matching the name anywhere.
+    expect(assessPath("read", join(cwd, "auth.json"), cwd).approval).toBe(false);
+    // `credentials.json` has always been matched by the global name rule, home or not.
+    expect(assessPath("read", join(cwd, "credentials.json"), cwd).approval).toBe(true);
+  });
+});
+
+describe("options that glue their value to the same argument", () => {
+  // `-f/home/user/.ssh/id_rsa` reaches the same file as `--file=/home/...`, and the
+  // whole-argument check never looked inside the glued form.
+  for (const command of [
+    `grep -f${join(root, ".ssh/id_rsa")} notes.txt`,
+    `grep -rf${join(root, ".ssh/id_rsa")} .`,
+    `rg -f${join(root, ".ssh/id_rsa")} notes.txt`,
+    `file -f${join(root, ".ssh/id_rsa")}`,
+    `du -X${join(root, ".ssh/id_rsa")} .`,
+  ]) {
+    test("glued credential value blocked: " + command, () => {
+      expect(assessCommand(command, cwd).approval).toBe(true);
+    });
+  }
+  for (const command of [
+    `sort -o${join(root, "outside.txt")} notes.txt`,
+    `sort -T${join(root, "tmp")} notes.txt`,
+  ]) {
+    test("glued write target blocked: " + command, () => {
+      expect(assessCommand(command, cwd).approval).toBe(true);
+    });
+  }
+  test("flags keep their meaning when a value-taking option is last", () => {
+    // The value then lives in the next argument, so it has to be checked there.
+    expect(assessCommand(`grep -f ${join(root, ".ssh/id_rsa")} notes.txt`, cwd).approval).toBe(true);
+    expect(assessCommand("grep -nf notes.txt", cwd).approval).toBe(false);
+    expect(assessCommand("grep -n notes.txt", cwd).approval).toBe(false);
+    expect(assessCommand("ls -la", cwd).approval).toBe(false);
+  });
+});

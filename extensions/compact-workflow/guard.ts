@@ -5,6 +5,18 @@ import { showReview } from "./ui.js";
 
 type Review = typeof showReview;
 
+/**
+ * Why a call was refused, in the words the policy used.
+ *
+ * The panel keeps the short tag on its title row, but the model never sees the panel:
+ * it only gets the text below. Repeating the rule saves a round trip of the model
+ * guessing why it was blocked and re-issuing the same command.
+ */
+function refusal(decision: Assessment): string {
+  const why = decision.reasons[0];
+  return why ? `未获得用户授权，操作未执行（${why}）` : "未获得用户授权，操作未执行";
+}
+
 function ordered(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(ordered);
   if (value && typeof value === "object") return Object.fromEntries(
@@ -55,7 +67,9 @@ export class PermissionGate {
       const signal = ctx.signal ? AbortSignal.any([controller.signal, ctx.signal]) : controller.signal;
       const payload = (name === "bash" || name === "powershell") && typeof input.command === "string"
         ? input.command : JSON.stringify(input, null, 2);
-      const title = "需要用户授权";
+      // The tag rides on the row the dialog already draws for its title, so naming the
+      // rule costs no extra height; the full sentence goes to the model instead.
+      const title = decision.tag ? `需要用户授权 · ${decision.tag}` : "需要用户授权";
       const accepted = await this.review(ctx, title, payload, true, signal);
       return accepted && !signal.aborted && epoch === this.epoch;
     } catch {
@@ -73,7 +87,12 @@ export class PermissionGate {
       // Bind approval to the arguments and resolved target presented to the user.
       const fingerprint = decision.approval ? this.fingerprint(name, input, ctx.cwd) : undefined;
       if (!await this.decide(name, input, decision, ctx)) {
-        return { block: true as const, reason: "未获得用户授权，操作未执行。请勿改写命令绕过授权。", terminate: true };
+        // The model sees only this string, so it carries the policy's own reason.
+        return {
+          block: true as const,
+          reason: `${refusal(decision)}。请勿改写命令绕过授权，也不要重试同一条命令。`,
+          terminate: true,
+        };
       }
       if (fingerprint) this.receipts.set(id, fingerprint);
       return undefined;
@@ -89,7 +108,7 @@ export class PermissionGate {
     const receipt = this.receipts.get(id);
     this.receipts.delete(id);
     if (decision.approval && receipt && receipt === this.fingerprint(name, input, ctx.cwd)) return decision;
-    if (!await this.decide(name, input, decision, ctx)) throw new Error("未获得用户授权，操作未执行");
+    if (!await this.decide(name, input, decision, ctx)) throw new Error(refusal(decision));
     return decision;
   }
 

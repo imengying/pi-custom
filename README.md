@@ -13,7 +13,7 @@
 
 ## 授权
 
-需要授权的操作会在终端底部贴底显示一条全宽面板（不是居中的悬浮窗），与聊天内容用一条细分隔线分开；标题标明工具名，正文原文显示命令或参数，默认选中「允许本次操作」。
+需要授权的操作会在终端底部贴底显示一条全宽面板（不是居中的悬浮窗），与聊天内容用一条细分隔线分开；标题行的短标签（如「· 删除」「· 凭据」「· 目录外」）说明触发规则，正文原文显示命令或参数，默认选中「允许本次操作」——面板总高度不变，标签只是让标题自带原因。
 
 - `↑↓` / `Tab` 切换选项，`Enter` 确认
 - `a` / `1` 允许本次，`Esc` / `2` / `n` 拒绝
@@ -35,10 +35,13 @@
 - 删除、提权、Git 写操作、网络传输、脚本、重定向、变量或命令替换、未知选项、自定义工具
 - 目录外或受保护路径的写入
 - 凭据与敏感配置：`.env*`、`.ssh`、`.gnupg`、`.aws`、`.kube`、`.netrc`、`.git-credentials`、`.npmrc`、`.pypirc`、`.gitconfig`、`.bash_history`、`.pgpass`、`~/.config/gh`、`~/.config/gcloud`、`~/.docker` 等目录与文件，以及 `id_rsa`、`credentials.json`、`service-account*.json`、`*.pem`、`*.key` 一类名称
+- 代理工具自己的凭据：`~/.pi`（`auth.json`、存有 `apiKey` 的 `models.json`）、`~/.codex`、`~/.claude`、`~/.claude.json`、`~/.gemini`、`~/.continue`、`~/.aider`，以及 `~/.local/share/keyrings` 下的 `login.keyring`、`auth.json`、`token.json`、`oauth*creds.json`
 
-检查逐个参数进行（包括 `--file=...` 这类选项值），所以 `grep -r KEY .ssh` 和 `cat id_rsa` 也会先询问；`echo`、`printf` 等以数据为参数的命令不参与路径检查。
+检查逐个参数进行，包括选项值：`--file=...` 和 `-fFILE` 两种写法都会拆出被指向的路径（`-nfFILE` 按 `-n -f FILE` 理解），所以 `grep -f ~/.ssh/id_rsa x`、`grep -r KEY .ssh`、`cat id_rsa` 都会先询问；`echo`、`printf` 等以数据为参数的命令不参与路径检查。只有家目录下的文件才套用 `auth.json`、`credentials*` 这类通用名字，免得误伤项目里的同名文件。
 
-自动放行的只读命令会改用系统可执行文件执行，Git 只读命令额外禁用外部 diff、textconv、pager、fsmonitor 和 hooks。改过参数或符号链接目标后会重新检查；没有交互界面、被取消或检查失败时，需要授权的操作不会执行。
+自动放行的只读命令会改用系统可执行文件执行，Git 只读命令额外禁用外部 diff、textconv、pager、fsmonitor 和 hooks。改过参数或符号链接目标后会重新检查；没有交互界面、被取消或检查失败时，需要授权的操作不会执行。被拒绝时完整原因会回传（如「未获得用户授权，操作未执行（目标涉及凭据或敏感配置）」），模型不必重试同一条命令。
+
+手动 `!` / `!!` 命令每一条只弹一次面板；只有其他扩展改写了待执行的命令时才会重新询问。设置了 `shellCommandPrefix` 时前缀照旧生效，也不会因此多问一次。
 
 输入 `/permissions` 可以随时查看当前规则。
 
@@ -54,9 +57,13 @@ pi 在 Unix 上固定用 `/bin/bash`，不读取 `$SHELL`。想让命令真正�
 
 ## 安装
 
-1. 把 `extensions/compact-workflow/` 下的所有 `.ts` 文件复制到 `~/.pi/agent/extensions/compact-workflow/`
-2. 把 `themes/codex-dark.json` 复制到 `~/.pi/agent/themes/`
-3. 在 `~/.pi/agent/settings.json` 中设置：
+推荐用 pi 直接安装（仓库已带 `pi` 清单）：
+
+```sh
+pi install /绝对路径/pi-custom      # 也支持 git:github.com/imengying/pi-custom
+```
+
+随后在 `~/.pi/agent/settings.json` 中设置：
 
 ```json
 {
@@ -70,18 +77,26 @@ pi 在 Unix 上固定用 `/bin/bash`，不读取 `$SHELL`。想让命令真正�
 
 前两项是扩展运行所必需的；后三项用于精简启动界面，可选。已打开的 pi 执行 `/reload` 即可生效，重启也会自动加载。
 
-卸载：把 `~/.pi/agent/extensions/compact-workflow/` 移出 extensions 目录后重启，主题和启动偏好可在设置菜单中单独调整。
+手动安装（不经过 pi）：把 `extensions/compact-workflow/` 下的所有 `.ts` 文件复制到 `~/.pi/agent/extensions/compact-workflow/`，把 `themes/codex-dark.json` 复制到 `~/.pi/agent/themes/`，同样设置上面两项。
+
+注意：`~/.pi/agent/extensions/` 是 pi 的全局自动发现目录，两种方式不要同时用。两份同名扩展会互相冲突（报 `Tool "bash" conflicts with ...`），而且先加载的那份会遮住另一份——手工复制的副本不会随仓库更新，安全修复会悄悄失效。
+
+卸载：`pi remove /路径/pi-custom`；手动安装的则把 `~/.pi/agent/extensions/compact-workflow/` 移出 extensions 目录后重启，主题和启动偏好可在设置菜单中单独调整。
 
 ## 边界
 
 这里实现的是 pi 执行入口的审批层，不启用系统级沙箱。已授权脚本的内部行为、你已有的 shell / Git 配置，以及其他扩展直接运行的代码，都仍受 pi 本身和本机环境约束——它不能当作运行不可信代码的隔离边界。OpenAI 官方文档也把[审批策略和系统沙箱](https://developers.openai.com/codex/cli/reference/)列为两项独立控制。
 
+只读工具（`read`、`grep`、`find`、`ls`）没有接管，所以模型仍可直接读敏感文件，只有 `bash` 侧会拦住。若要真正限制读取范围，需要 pi 本身的沙箱或权限机制。非交互模式（无 UI）下需要授权的写操作会直接失败，不会静默放行。
+
 ## 开发
 
 ```sh
 bun install --ignore-scripts
-bun run typecheck
+bun run typecheck   # extensions/ 与 tests/ 一起检查
 bun test
 ```
 
-开发环境为 bun 1.4.0、TypeScript 7.0.2、Node 类型 24。代码入口是 `extensions/compact-workflow/index.ts`，只使用 pi 的公开扩展 API。`policy.ts` 负责权限分类，`guard.ts` 负责逐次授权，`ui.ts` 与 `renderers.ts` 负责预览、查看窗口和红绿差异，`compact-footer.ts` 负责底栏。测试依赖仅位于本项目的 `node_modules`，扩展运行时复用 pi 提供的模块。
+开发环境为 bun 1.4.x、TypeScript 7.0.2、Node 类型 24。代码入口是 `extensions/compact-workflow/index.ts`，只使用 pi 的公开扩展 API。`policy.ts` 负责权限分类，`guard.ts` 负责逐次授权，`ui.ts` 与 `renderers.ts` 负责预览、查看窗口和红绿差异，`compact-footer.ts` 负责底栏。`colors.ts` 集中处理主题中没有的类型角色。
+
+测试的运行时依赖仅位于本项目的 `node_modules`，扩展运行时复用 pi 提供的模块。其中 `tests/upstream.test.ts` 单独锚定三处上游 `dist/` 内部路径：pi 升级若挪动它们，会在这里给出明确失败，而不是在别的测试里报一句“找不到模块”。

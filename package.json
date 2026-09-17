@@ -1,7 +1,11 @@
 {
   "name": "pi-compact-workflow",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "紧凑显示与逐次授权扩展：折叠思考与命令输出、红绿差异、codex 风格底栏，以及执行前审批",
+  "keywords": ["pi-package"],
+  "license": "MIT",
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"
@@ -17,6 +21,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",
     "@earendil-works/pi-tui": "0.85.1",
+    "@types/bun": "^1.4.2",
     "@types/node": "24.13.4",
     "typescript": "7.0.2"
   }

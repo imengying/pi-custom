@@ -149,7 +149,10 @@ export class ReviewDialog {
     const lines = [
       ...(dock ? [rule()] : []),
       ...(height >= 3 ? [row(this.theme.fg("accent", this.theme.bold(this.title)) +
-        (this.title.includes("等待确认") ? "" : this.theme.fg("accent", " · 等待确认")))] : []),
+        // The tag already says why this panel is up, so the state suffix is only added
+        // when the title carries no reason: three segments on one row read as noise, and
+        // the panel is self-evidently awaiting a decision.
+        (this.title.includes("等待确认") || this.title.includes(" · ") ? "" : this.theme.fg("accent", " · 等待确认")))] : []),
       ...content.slice(this.offset, this.offset + this.pageSize).map((text) => row(this.theme.fg("muted", text))),
       ...(divider ? [rule()] : []),
       choice(true),

@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, symlinkSync, unlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { PermissionGate } from "../extensions/compact-workflow/guard.js";
 import { setShellDialect } from "../extensions/compact-workflow/policy.js";
 
@@ -56,28 +57,36 @@ describe("permission decisions", () => {
     let title = "";
     const gate = new PermissionGate(async (_ctx, heading, text) => { title = heading; body = text; return false; });
     await gate.preflight("id", "write", { path: "../outside-file", content: "preview" }, context());
-    expect(title).toBe("需要用户授权");
+    // The rule is named on the title row the dialog already draws; the body stays
+    // label-free so the payload is never padded with extra lines.
+    expect(title).toBe("需要用户授权 · 目录外");
     expect(body).toContain("preview");
-    // The panel is deliberately label-free: no 完整操作/原因/工作目录/实际目标 lines.
     for (const label of ["完整操作", "原因:", "工作目录:", "实际目标:"]) expect(body).not.toContain(label);
   });
-  test("shell approval keeps the heading free of the tool name", async () => {
-    // `bash` is pi's tool name on every platform; naming it in the heading said nothing
-    // about the real shell, so the heading is now just the decision being asked for and
-    // the tool is identified by the payload below it. The policy still follows the shell.
+  test("the reason tag rides the existing title row and never names the tool", async () => {
+    // `bash` is pi's tool name on every platform; naming it said nothing about the real
+    // shell. The heading is the decision plus a short tag for the rule that asked, and
+    // the tag is deliberately a couple of characters so it fits that row instead of
+    // becoming another line of panel. The policy still follows the shell.
     const titles: string[] = [];
     const gate = new PermissionGate(async (_ctx, heading) => { titles.push(heading); return false; });
     try {
       setShellDialect("zsh", "/usr/bin/zsh");
       await gate.preflight("id", "bash", dangerous, context());
-      expect(titles.at(-1)).toBe("需要用户授权");
+      expect(titles.at(-1)).toBe("需要用户授权 · 删除");
       setShellDialect("bash", undefined);
-      await gate.preflight("id", "bash", dangerous, context());
-      expect(titles.at(-1)).toBe("需要用户授权");
+      await gate.preflight("id", "bash", { command: "sudo true" }, context());
+      expect(titles.at(-1)).toBe("需要用户授权 · 提权");
       await gate.preflight("id", "write", { path: "../outside-file", content: "x" }, context());
-      expect(titles.at(-1)).toBe("需要用户授权");
-      // No tool name and no shell path may leak back into the heading.
-      expect(titles.every((title) => title === "需要用户授权")).toBe(true);
+      expect(titles.at(-1)).toBe("需要用户授权 · 目录外");
+      // No tool name and no shell path may leak back into the heading, and the tag
+      // stays short enough to share the title row rather than become its own line.
+      for (const title of titles) {
+        expect(title).not.toContain("bash");
+        expect(title).not.toContain("zsh");
+        expect(title.startsWith("需要用户授权 · ")).toBe(true);
+        expect(visibleWidth(title.slice("需要用户授权 · ".length))).toBeLessThanOrEqual(6);
+      }
     } finally {
       setShellDialect("bash", undefined);
     }

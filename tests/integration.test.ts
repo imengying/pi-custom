@@ -67,6 +67,38 @@ test("manual ! commands also stop without approval", async () => {
   expect(existsSync(join(cwd, "keep-me"))).toBe(true);
 });
 
+test("a manual ! command asks once and then runs the rewritten command", async () => {
+  // The operations.exec hook used to re-run the whole approval, so every `!` command
+  // that needs one asked twice. An unchanged command is already authorized; only a
+  // different string (another hook rewriting it) goes back to the user.
+  let panels = 0;
+  const interactive = {
+    ...ctx,
+    hasUI: true,
+    ui: { custom: async () => { panels++; return true; }, setWorkingMessage: () => {} },
+  };
+  const command = "rm -f never-created";
+  const handler = await handlers.get("user_bash")({ command, cwd, excludeFromContext: false }, interactive);
+  expect(panels).toBe(1);
+  // Executing exactly what the user approved must not ask again.
+  await handler.operations.exec(command, cwd, { onData: () => {} }).catch(() => {});
+  expect(panels).toBe(1);
+});
+
+test("a command rewritten after approval asks again", async () => {
+  let panels = 0;
+  const interactive = {
+    ...ctx,
+    hasUI: true,
+    ui: { custom: async () => { panels++; return true; }, setWorkingMessage: () => {} },
+  };
+  const handler = await handlers.get("user_bash")({ command: "rm -f never-created", cwd, excludeFromContext: false }, interactive);
+  expect(panels).toBe(1);
+  // A different string reaching exec cannot inherit the first approval.
+  await handler.operations.exec("rm -rf /nonexistent-target", cwd, { onData: () => {} }).catch(() => {});
+  expect(panels).toBe(2);
+});
+
 test("ordinary writes preserve native result text and add an actual before/after diff", async () => {
   const path = "rewrite.txt";
   writeFileSync(join(cwd, path), "old line\nunchanged\n");
@@ -105,6 +137,36 @@ test("outside writes are blocked before creating any file", async () => {
   const path = join(root, "must-not-exist");
   await expect(tools.get("write").execute("outside", { path, content: "no" }, undefined, undefined, ctx)).rejects.toThrow("未获得用户授权");
   expect(existsSync(path)).toBe(false);
+});
+
+test("a shell prefix survives the rewrite without a second panel", async () => {
+  // pi prepends shellCommandPrefix before calling operations.exec. Reusing the bare
+  // command's rewritten form would drop it, and re-approving the whole string would
+  // make every `!` command ask twice.
+  const settingsPath = join(process.env.HOME ?? "/tmp", ".pi", "agent", "settings.json");
+  const previous = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : undefined;
+  try {
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({ ...(previous ? JSON.parse(previous) : {}), shellCommandPrefix: "echo PREFIX-SENTINEL" }));
+    handlers.get("session_start")({}, { ...ctx, hasUI: false });
+    let panels = 0;
+    const interactive = {
+      ...ctx,
+      hasUI: true,
+      ui: { custom: async () => { panels++; return true; }, setWorkingMessage: () => {} },
+    };
+    const command = "mkdir made-by-rewrite";
+    const handler = await handlers.get("user_bash")({ command, cwd, excludeFromContext: false }, interactive);
+    expect(panels).toBe(1);
+    let output = "";
+    await handler.operations.exec(`echo PREFIX-SENTINEL\n${command}`, cwd, { onData: (data: Buffer) => { output += data.toString(); } });
+    expect(output).toContain("PREFIX-SENTINEL");
+    expect(existsSync(join(cwd, "made-by-rewrite"))).toBe(true);
+  } finally {
+    if (previous === undefined) rmSync(settingsPath, { force: true });
+    else writeFileSync(settingsPath, previous);
+    handlers.get("session_start")({}, { ...ctx, hasUI: false });
+  }
 });
 
 test("large writes succeed with bounded diff computation", async () => {

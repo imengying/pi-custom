@@ -131,10 +131,15 @@ export default function compactWorkflow(pi: ExtensionAPI): void {
         "  删除、提权、Git 写操作、网络传输、脚本、重定向、变量或命令替换\n" +
         "  未知选项、自定义工具、目录外或受保护路径的写入\n" +
         "  凭据与敏感配置：.env*、.ssh、.gnupg、.aws、.kube、.netrc、.npmrc、\n" +
-        "    .git-credentials、~/.config/gh、~/.docker 等，以及 id_rsa、*.pem 等名称\n\n" +
+        "    .git-credentials、~/.config/gh、~/.docker 等，以及 id_rsa、*.pem 等名称\n" +
+        "  代理凭据：~/.pi（auth.json、models.json）、~/.codex、~/.claude、\n" +
+        "    ~/.gemini、~/.local/share/keyrings 等\n" +
+        "    auth.json / credentials 类名称只在家目录生效\n" +
+        "  选项值也检查：--file=X 与 -fX 都会拆出路径（-nfX 视为 -n -f X）\n\n" +
         "授权面板\n" +
         "  ↑↓ / Tab 选择，Enter 确认；a / 1 允许本次，Esc / 2 / n 拒绝\n" +
         "  PgUp/PgDn、j/k、Home/End 滚动；等待确认没有超时\n" +
+        "  标题行的短标签说明触发规则；被拒时完整原因会告诉模型\n" +
         "  授权只对当次操作有效，没有永久放行前缀\n\n" +
         "shell：" + (currentShellDialect() === "zsh"
           ? (currentShellPath() ?? "zsh") + "（=命令 展开需授权）"
@@ -155,18 +160,30 @@ export default function compactWorkflow(pi: ExtensionAPI): void {
   pi.on("user_bash", async (event, ctx) => {
     shellConfig(event.cwd);
     const userContext = { ...ctx, cwd: event.cwd };
-    if (!await gate.userCommand(event.command, userContext)) {
+    const decision = await gate.userCommand(event.command, userContext);
+    if (!decision) {
       return { result: { output: "命令已取消：未获得用户授权。", exitCode: 126, cancelled: true, truncated: false } };
     }
+    // pi prepends `shellCommandPrefix` in executeBash, before calling exec. The prefix is
+    // the user's own shell setup, like shellPath, so it is not something to ask about;
+    // it only has to survive the rewrite below.
+    const prefix = shellConfig(event.cwd).commandPrefix;
+    const approved = event.command;
+    const planned = decision.safeCommand ?? approved;
+    const expected = prefix ? `${prefix}\n${approved}` : approved;
     const local = createLocalBashOperations(shellConfig(event.cwd));
     return {
       operations: {
         async exec(command, cwd, options) {
-          // A prefix or another hook may have changed the actual command, so the
-          // approval is re-checked here instead of reusing the earlier decision.
-          const decision = await gate.userCommand(command, { ...ctx, cwd, signal: options.signal ?? ctx.signal });
-          if (!decision || options.signal?.aborted) throw new Error("命令已取消：未获得用户授权。");
-          return local.exec(decision.safeCommand ?? command, cwd, options);
+          // Another hook may still have rewritten the command, so anything but the
+          // exact string the user was shown is authorized again instead of inheriting
+          // that approval. A plain prefix match is the command already approved.
+          if (command === expected) {
+            return local.exec(prefix ? `${prefix}\n${planned}` : planned, cwd, options);
+          }
+          const next = await gate.userCommand(command, { ...ctx, cwd, signal: options.signal ?? ctx.signal });
+          if (!next || options.signal?.aborted) throw new Error("命令已取消：未获得用户授权。");
+          return local.exec(next.safeCommand ?? command, cwd, options);
         },
       },
     };

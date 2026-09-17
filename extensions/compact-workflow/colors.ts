@@ -1,14 +1,15 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 
 /**
- * The codex-dark theme gained two magenta accents (the `$` prompt and the git
- * branch) after this extension first shipped, following codex's own style guide
- * (`codex-rs/tui/styles.md`). An older copy of the theme does not define those
- * roles, and `Theme.fg` throws for an unknown role, so each optional role is
- * probed once per theme instance and the caller's fallback is used instead.
+ * The codex-dark theme defines two magenta accents (the `$` prompt and the git branch)
+ * following codex's own style guide (`codex-rs/tui/styles.md`). They are not in pi's
+ * `ThemeColor` union, and pi's own themes (`dark`, `light`) do not define them, while
+ * `Theme.fg` throws on an unknown role. A user who switches away from codex-dark would
+ * therefore crash the renderer mid-session, so each role is probed once per theme
+ * instance and the caller's fallback colour is used when it is missing.
  */
-const optionalRoles = new WeakMap<Theme, Set<string>>();
 const PROBED_ROLES = ["bashPrompt", "branch"] as const;
+const optionalRoles = new WeakMap<Theme, Set<string>>();
 
 function definedRoles(theme: Theme): Set<string> {
   const cached = optionalRoles.get(theme);

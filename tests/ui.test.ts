@@ -4,6 +4,7 @@ import { compositeTuiLine, visibleWidth, stripTerminalSequences } from "@earendi
 import { loadThemeFromPath, setThemeInstance } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { compactThinking, ReviewDialog, reviewText, showReview } from "../extensions/compact-workflow/ui.js";
 import { CommandOutputComponent, DiffComponent, diffCounts, editRenderers, recordExecutionTime, shellRenderers } from "../extensions/compact-workflow/renderers.js";
+import { withRole } from "../extensions/compact-workflow/colors.js";
 import { fileURLToPath } from "node:url";
 
 const theme = loadThemeFromPath(fileURLToPath(new URL(
@@ -107,7 +108,7 @@ describe("command and diff rendering", () => {
       { command: 'git commit -m "fix" && echo done' }, theme,
       { state: {}, expanded: false, isPartial: false, isError: false } as any,
     ).render(80)[0];
-    expect(rendered).toContain(theme.fg("bashPrompt", "$ "));
+    expect(rendered).toContain(withRole(theme, "bashPrompt", "toolTitle", "$ "));
     expect(rendered).not.toContain(theme.fg("toolTitle", "$ "));
     // The syntax roles come from the theme's syntax palette.
     expect(rendered).toContain(theme.fg("syntaxString", '"fix"'));
@@ -281,6 +282,25 @@ describe("review dialog", () => {
       dialog.dispose();
     });
   }
+  test("a reason tag names the rule without costing a line", () => {
+    // The tag lives on the title row the panel already draws. If it ever wrapped or took
+    // a row of its own, the panel would quietly grow, so the same body is rendered with
+    // and without a tag at several heights and the results must line up exactly.
+    for (const rows of [24, 8, 6, 3]) {
+      const tagged = new ReviewDialog("需要用户授权 · 凭据", "cat ~/.pi/agent/auth.json", theme, true, () => rows, () => {}, () => {});
+      const bare = new ReviewDialog("需要用户授权", "cat ~/.pi/agent/auth.json", theme, true, () => rows, () => {}, () => {});
+      const a = tagged.render(72);
+      const b = bare.render(72);
+      expect(a.length).toBe(b.length);
+      // Only the heading row differs; the payload, rules and choices are identical.
+      const changed = a.map((line, i) => (line === b[i] ? -1 : i)).filter((i) => i >= 0);
+      expect(changed.length).toBe(1);
+      expect(stripTerminalSequences(a[changed[0]])).toContain("需要用户授权 · 凭据");
+      expect(stripTerminalSequences(a[changed[0]])).not.toContain("等待确认");
+      tagged.dispose();
+      bare.dispose();
+    }
+  });
   test("panel frame avoids the warning colour and accents the heading and choices", () => {
     const { dialog } = make();
     const rendered = dialog.render(80).join("\n");

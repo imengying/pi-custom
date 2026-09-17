@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { loadThemeFromPath } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 import { installCompactFooter } from "../extensions/compact-workflow/compact-footer.js";
+import { withRole } from "../extensions/compact-workflow/colors.js";
 const theme = loadThemeFromPath(fileURLToPath(new URL(
   "../themes/codex-dark.json", import.meta.url,
 )), "truecolor");
@@ -97,7 +98,7 @@ test("each status field carries the accent codex assigns to it", () => {
   const { footer } = fixture();
   const lines = footer.render(120);
   expect(lines[0]).toContain(theme.fg("success", "/tmp/中文目录"));
-  expect(lines[0]).toContain(theme.fg("branch", "main"));
+  expect(lines[0]).toContain(withRole(theme, "branch", "dim", "main"));
   expect(lines[0]).toContain(theme.fg("muted", "会话示例"));
   expect(lines[1]).toContain(theme.fg("success", "↑ 175k"));
   expect(lines[1]).toContain(theme.fg("success", "↓ 174k"));
@@ -113,21 +114,19 @@ test("each status field carries the accent codex assigns to it", () => {
   expect(visibleWidth(lines[1])).toBe(120);
 });
 
-test("a theme without the optional magenta roles still renders", () => {
+test("pi's own themes lack the magenta roles and fall back instead of throwing", () => {
+  // codex-dark is the only theme defining `bashPrompt` and `branch`, and both are absent
+  // from pi's `ThemeColor` union. A user who switches to a built-in theme would otherwise
+  // crash the renderer, so the fallback path is exercised against pi's real dark theme
+  // rather than a stub that only pretends to throw.
   const { footer, ctx } = fixture();
-  // Older copies of codex-dark.json predate the magenta accents; `withRole` must
-  // fall back instead of letting Theme.fg throw on an unknown role.
-  const legacy: any = {
-    bold: (text: string) => text,
-    fg: (role: string, text: string) => {
-      if (role === "branch" || role === "bashPrompt") throw new Error(`Unknown theme color: ${role}`);
-      return `[${role}]${text}`;
-    },
-  };
-  ctx.ui.theme = legacy;
+  ctx.ui.theme = loadThemeFromPath(fileURLToPath(new URL(
+    "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url,
+  )), "truecolor");
   const lines = footer.render(120);
-  expect(lines[0]).toContain("[dim]main");
-  expect(lines[1]).toContain("[accent]deepseek-v4.1-flash • high");
+  // The branch still renders, in the fallback colour rather than magenta.
+  expect(stripTerminalSequences(lines[0])).toContain("main");
+  expect(stripTerminalSequences(lines[1])).toContain("deepseek-v4.1-flash • high");
 });
 
 test("a whole token figure drops the decimal, a fractional one keeps it", () => {
